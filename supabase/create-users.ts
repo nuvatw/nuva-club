@@ -149,18 +149,35 @@ async function createDemoUsers() {
         },
       });
 
+      let userId: string | null = null;
+
       if (error) {
-        console.error(`Failed to create ${user.email}:`, error.message);
-        continue;
+        // User might already exist, try to get their ID
+        if (error.message.includes('already been registered')) {
+          console.log(`User ${user.email} already exists, fetching ID...`);
+          const { data: users } = await supabase.auth.admin.listUsers();
+          const existingUser = users?.users?.find(u => u.email === user.email);
+          if (existingUser) {
+            userId = existingUser.id;
+          }
+        } else {
+          console.error(`Failed to create ${user.email}:`, error.message);
+          continue;
+        }
+      } else {
+        userId = data.user?.id || null;
+        console.log(`Created user: ${user.email} (${user.name})`);
       }
 
-      console.log(`Created user: ${user.email} (${user.name})`);
-
-      // Update profile with additional data
-      if (data.user) {
-        const { error: updateError } = await supabase
+      // Insert or update profile with additional data
+      if (userId) {
+        const { error: upsertError } = await supabase
           .from('profiles')
-          .update({
+          .upsert({
+            id: userId,
+            name: user.name,
+            email: user.email,
+            image: `https://api.dicebear.com/7.x/adventurer/svg?seed=${encodeURIComponent(user.name)}`,
             role: user.role,
             available_roles: user.availableRoles || [user.role],
             level: user.level,
@@ -168,13 +185,12 @@ async function createDemoUsers() {
             subscription_status: user.subscriptionStatus,
             cohort_month: '2025-01',
             billing_cycle: 'monthly',
-          })
-          .eq('id', data.user.id);
+          });
 
-        if (updateError) {
-          console.error(`Failed to update profile for ${user.email}:`, updateError.message);
+        if (upsertError) {
+          console.error(`Failed to upsert profile for ${user.email}:`, upsertError.message);
         } else {
-          console.log(`  - Updated profile: role=${user.role}, level=${user.level}`);
+          console.log(`  - Created profile: role=${user.role}, level=${user.level}`);
         }
       }
     } catch (err) {
