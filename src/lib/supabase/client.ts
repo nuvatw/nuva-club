@@ -1,0 +1,19 @@
+import { createBrowserClient } from '@supabase/ssr';
+import type { SupabaseClient } from '@supabase/supabase-js';
+
+export function createClient(): SupabaseClient {
+  return createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
+}
+
+// Singleton client for use in client components
+let browserClient: SupabaseClient | null = null;
+
+export function getClient(): SupabaseClient {
+  if (!browserClient) {
+    browserClient = createClient();
+  }
+  return browserClient;
+}

@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { getFeedbackForStudent, MOCK_COACH_STUDENTS, LEVELS, useDatabase } from '@/lib/mock';
+import { getFeedbackForStudent, MOCK_COACH_STUDENTS, LEVELS } from '@/lib/mock';
 import { cn } from '@/lib/utils/cn';
 
 function formatDate(dateStr: string) {
@@ -29,7 +29,6 @@ export default function StudentDetailPage({
 }) {
   const { studentId } = use(params);
   const router = useRouter();
-  const { state } = useDatabase();
   const [showForm, setShowForm] = useState(false);
   const [newFeedback, setNewFeedback] = useState({
     type: 'check_in' as 'check_in' | 'challenge_feedback',
@@ -47,9 +46,6 @@ export default function StudentDetailPage({
   const student = MOCK_COACH_STUDENTS.find(s => s.id === studentId);
   const existingFeedback = getFeedbackForStudent(studentId);
   const allFeedback = [...localFeedback, ...existingFeedback];
-
-  // Get student's check-ins
-  const studentCheckIns = state.checkIns.filter(c => c.userId === studentId);
 
   const handleSubmit = () => {
     if (!newFeedback.feedbackContent.trim()) return;
@@ -215,55 +211,6 @@ export default function StudentDetailPage({
               <Button variant="outline" onClick={() => setShowForm(false)}>
                 取消
               </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Student Check-ins */}
-      {studentCheckIns.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">學員打卡紀錄</CardTitle>
-            <CardDescription>學員的學習進度打卡</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {studentCheckIns.map((checkIn) => (
-                <div
-                  key={checkIn.id}
-                  className={cn(
-                    'p-4 rounded-lg border',
-                    !checkIn.feedbackGiven && 'border-orange-300 bg-orange-50'
-                  )}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <Badge variant={checkIn.feedbackGiven ? 'secondary' : 'default'}>
-                      {checkIn.feedbackGiven ? '已回覆' : '待回覆'}
-                    </Badge>
-                    <span className="text-sm text-muted-foreground">
-                      {formatDate(checkIn.createdAt)}
-                    </span>
-                  </div>
-                  <p className="whitespace-pre-wrap">{checkIn.content}</p>
-                  {!checkIn.feedbackGiven && (
-                    <Button
-                      size="sm"
-                      className="mt-2"
-                      onClick={() => {
-                        setNewFeedback(prev => ({
-                          ...prev,
-                          type: 'check_in',
-                          feedbackContent: `關於你的打卡「${checkIn.content.slice(0, 20)}...」：\n\n`,
-                        }));
-                        setShowForm(true);
-                      }}
-                    >
-                      回覆此打卡
-                    </Button>
-                  )}
-                </div>
-              ))}
             </div>
           </CardContent>
         </Card>

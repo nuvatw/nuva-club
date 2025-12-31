@@ -213,7 +213,7 @@ export default function SubscriptionPage() {
                       {subscription.planType === key && (
                         <Badge variant="outline" className="text-xs">目前方案</Badge>
                       )}
-                      {'recommended' in plan && plan.recommended && (
+                      {'recommended' in plan && (plan as { recommended?: boolean }).recommended && (
                         <Badge>推薦</Badge>
                       )}
                     </div>

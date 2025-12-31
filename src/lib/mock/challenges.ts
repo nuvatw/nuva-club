@@ -30,6 +30,7 @@ export interface MockChallenge {
   year: number;
   monthNum: number; // 1-12
   theme: typeof CHALLENGE_THEMES[number];
+  prize?: string; // 獎品描述
   // 管理員可編輯的欄位
   isEditable?: boolean;
   customTitle?: string;
@@ -106,6 +107,7 @@ export function generateYearChallenges(year: number, referenceDate: Date = new D
       year,
       monthNum: month,
       theme,
+      prize: '限定版徽章 + 社群榮譽',
       isEditable: true,
     };
   });

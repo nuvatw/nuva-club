@@ -72,7 +72,7 @@ export function WaitlistForm({ onSuccess }: WaitlistFormProps) {
     const result = waitlistFormSchema.safeParse({ name, email });
     if (!result.success) {
       const fieldErrors: { name?: string; email?: string } = {};
-      result.error.errors.forEach((err) => {
+      result.error.issues.forEach((err) => {
         const field = err.path[0] as 'name' | 'email';
         fieldErrors[field] = err.message;
       });

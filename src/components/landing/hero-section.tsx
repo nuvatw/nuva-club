@@ -54,11 +54,12 @@ export function HeroSection() {
                 </svg>
               </Button>
             </Link>
-            <Button variant="outline" size="lg" className="text-lg px-8 py-6 rounded-full" asChild>
-              <a href="#features">
-                了解更多
-              </a>
-            </Button>
+            <a
+              href="#features"
+              className="inline-flex items-center justify-center text-lg px-8 py-3 rounded-full border border-input bg-background hover:bg-accent hover:text-accent-foreground transition-colors"
+            >
+              了解更多
+            </a>
           </div>
 
           {/* Social Proof */}

@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { useUser, useDatabase, MOCK_COACH_STUDENTS, LEVELS, MOCK_FEEDBACK } from '@/lib/mock';
+import { useUser, MOCK_COACH_STUDENTS, LEVELS, MOCK_FEEDBACK } from '@/lib/mock';
 import { cn } from '@/lib/utils/cn';
 
 function getLevelName(level: number) {
@@ -13,11 +13,10 @@ function getLevelName(level: number) {
 
 export default function NunuDashboardPage() {
   const { user } = useUser();
-  const { state } = useDatabase();
   const students = MOCK_COACH_STUDENTS;
 
-  // Get pending check-ins that need feedback
-  const pendingCheckIns = state.checkIns.filter(c => !c.feedbackGiven);
+  // Count students who haven't received feedback recently
+  const pendingFeedbackCount = students.filter(s => s.feedbackCount === 0).length;
 
   if (!user) {
     return null;
@@ -56,55 +55,52 @@ export default function NunuDashboardPage() {
             </CardTitle>
           </CardHeader>
         </Card>
-        <Card className={cn(pendingCheckIns.length > 0 && 'border-orange-300 bg-orange-50')}>
+        <Card className={cn(pendingFeedbackCount > 0 && 'border-orange-300 bg-orange-50')}>
           <CardHeader className="pb-2">
-            <CardDescription>待回覆打卡</CardDescription>
-            <CardTitle className={cn('text-3xl', pendingCheckIns.length > 0 && 'text-orange-600')}>
-              {pendingCheckIns.length}
+            <CardDescription>待首次回饋</CardDescription>
+            <CardTitle className={cn('text-3xl', pendingFeedbackCount > 0 && 'text-orange-600')}>
+              {pendingFeedbackCount}
             </CardTitle>
           </CardHeader>
         </Card>
       </div>
 
-      {/* Pending Check-ins */}
-      {pendingCheckIns.length > 0 && (
+      {/* Pending Feedback Alert */}
+      {pendingFeedbackCount > 0 && (
         <Card className="border-orange-300">
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
               <span className="text-orange-500">!</span>
-              需要回饋的打卡
+              需要首次回饋的學員
             </CardTitle>
-            <CardDescription>學員正在等待你的回饋</CardDescription>
+            <CardDescription>這些學員尚未收到任何回饋</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {pendingCheckIns.slice(0, 3).map((checkIn) => {
-                const student = students.find(s => s.id === checkIn.userId);
-                return (
-                  <Link
-                    key={checkIn.id}
-                    href={`/club/nunu/vavas/${checkIn.userId}`}
-                    className="block"
-                  >
-                    <div className="flex items-center gap-3 p-3 rounded-lg bg-orange-50 hover:bg-orange-100 transition-colors">
-                      {student?.image ? (
-                        <img src={student.image} alt="" className="w-10 h-10 rounded-full object-cover" />
-                      ) : (
-                        <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                          <span className="font-medium">{student?.name.charAt(0)}</span>
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium">{student?.name || '學員'}</p>
-                        <p className="text-sm text-muted-foreground line-clamp-1">
-                          {checkIn.content}
-                        </p>
+              {students.filter(s => s.feedbackCount === 0).slice(0, 3).map((student) => (
+                <Link
+                  key={student.id}
+                  href={`/club/nunu/vavas/${student.id}`}
+                  className="block"
+                >
+                  <div className="flex items-center gap-3 p-3 rounded-lg bg-orange-50 hover:bg-orange-100 transition-colors">
+                    {student.image ? (
+                      <img src={student.image} alt="" className="w-10 h-10 rounded-full object-cover" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                        <span className="font-medium">{student.name.charAt(0)}</span>
                       </div>
-                      <Button size="sm">回覆</Button>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium">{student.name}</p>
+                      <p className="text-sm text-muted-foreground">
+                        {getLevelName(student.level)} · {student.cohortMonth} 加入
+                      </p>
                     </div>
-                  </Link>
-                );
-              })}
+                    <Button size="sm">給予回饋</Button>
+                  </div>
+                </Link>
+              ))}
             </div>
           </CardContent>
         </Card>
