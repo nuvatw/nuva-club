@@ -1,37 +1,142 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { MOCK_USERS, MOCK_COACH_STUDENTS, LEVELS } from '@/lib/mock';
 import { cn } from '@/lib/utils/cn';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+import type { Profile, CoachStudent } from '@/types/database';
+
+const LEVELS = [
+  { level: 1, displayName: 'Lv.1' },
+  { level: 2, displayName: 'Lv.2' },
+  { level: 3, displayName: 'Lv.3' },
+  { level: 4, displayName: 'Lv.4' },
+  { level: 5, displayName: 'Lv.5' },
+  { level: 6, displayName: 'Lv.6' },
+  { level: 7, displayName: 'Lv.7' },
+  { level: 8, displayName: 'Lv.8' },
+  { level: 9, displayName: 'Lv.9' },
+  { level: 10, displayName: 'Lv.10' },
+  { level: 11, displayName: 'Lv.11' },
+  { level: 12, displayName: 'Lv.12' },
+];
 
 function getLevelName(level: number) {
   return LEVELS.find((l) => l.level === level)?.displayName || `第 ${level} 級`;
 }
 
+interface CoachWithStudents extends Profile {
+  students: Array<{
+    id: string;
+    student: Profile;
+    feedback_count: number;
+    assigned_at: string;
+  }>;
+}
+
 export default function AssignmentsPage() {
   const router = useRouter();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [coaches, setCoaches] = useState<CoachWithStudents[]>([]);
+  const [unassignedStudents, setUnassignedStudents] = useState<Profile[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selectedCoach, setSelectedCoach] = useState<string | null>(null);
 
-  // Get all coaches
-  const coaches = MOCK_USERS.filter(u => u.availableRoles.includes('nunu'));
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
+    }
+  }, [authLoading, isAuthenticated, router]);
 
-  // Get students for each coach
-  const getStudentsForCoach = (coachId: string) => {
-    // In real app, would filter by coachId
-    // For demo, we'll show all students for any coach
-    return MOCK_COACH_STUDENTS;
-  };
+  useEffect(() => {
+    if (!authLoading && profile && profile.role !== 'guardian') {
+      router.push('/club/dashboard');
+    }
+  }, [authLoading, profile, router]);
 
-  // Get unassigned students (students without a coach)
-  const unassignedStudents = MOCK_USERS.filter(u =>
-    u.role === 'vava' &&
-    !u.assignedNunuId &&
-    u.planType === 'club'
-  );
+  useEffect(() => {
+    if (!profile) return;
+
+    const fetchData = async () => {
+      const supabase = getClient();
+
+      // Fetch all coaches
+      const { data: coachesData } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('role', 'nunu')
+        .order('name');
+
+      // Fetch all coach-student assignments with student info
+      const { data: assignmentsData } = await supabase
+        .from('coach_students')
+        .select(`
+          id,
+          coach_id,
+          student_id,
+          feedback_count,
+          assigned_at,
+          student:profiles!coach_students_student_id_fkey(*)
+        `);
+
+      // Group students by coach
+      const coachesWithStudents = (coachesData || []).map(coach => ({
+        ...coach,
+        students: (assignmentsData || [])
+          .filter(a => a.coach_id === coach.id)
+          .map(a => ({
+            id: a.id,
+            student: (Array.isArray(a.student) ? a.student[0] : a.student) as Profile,
+            feedback_count: a.feedback_count,
+            assigned_at: a.assigned_at,
+          })),
+      }));
+
+      setCoaches(coachesWithStudents);
+
+      // Find assigned student IDs
+      const assignedStudentIds = new Set(
+        (assignmentsData || []).map(a => a.student_id)
+      );
+
+      // Fetch club members without a coach assignment
+      const { data: clubMembers } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('role', 'vava')
+        .eq('plan_type', 'club');
+
+      const unassigned = (clubMembers || []).filter(
+        m => !assignedStudentIds.has(m.id)
+      );
+
+      setUnassignedStudents(unassigned);
+      setLoading(false);
+    };
+
+    fetchData();
+  }, [profile]);
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return null;
+  }
+
+  const totalAssigned = coaches.reduce((sum, c) => sum + c.students.length, 0);
+  const avgStudents = coaches.length > 0
+    ? Math.round(totalAssigned / coaches.length * 10) / 10
+    : 0;
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
@@ -55,15 +160,13 @@ export default function AssignmentsPage() {
         </Card>
         <Card>
           <CardContent className="pt-4 pb-4 text-center">
-            <p className="text-3xl font-bold">{MOCK_COACH_STUDENTS.length}</p>
+            <p className="text-3xl font-bold">{totalAssigned}</p>
             <p className="text-sm text-muted-foreground">已配對學員</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-4 pb-4 text-center">
-            <p className="text-3xl font-bold">
-              {coaches.length > 0 ? Math.round(MOCK_COACH_STUDENTS.length / coaches.length * 10) / 10 : 0}
-            </p>
+            <p className="text-3xl font-bold">{avgStudents}</p>
             <p className="text-sm text-muted-foreground">平均學員數</p>
           </CardContent>
         </Card>
@@ -115,7 +218,6 @@ export default function AssignmentsPage() {
       {/* Coaches and their students */}
       <div className="grid gap-6 md:grid-cols-2">
         {coaches.map(coach => {
-          const students = getStudentsForCoach(coach.id);
           const isSelected = selectedCoach === coach.id;
 
           return (
@@ -144,7 +246,7 @@ export default function AssignmentsPage() {
                     <CardDescription>{coach.email}</CardDescription>
                   </div>
                   <div className="text-right">
-                    <p className="text-2xl font-bold">{students.length}</p>
+                    <p className="text-2xl font-bold">{coach.students.length}</p>
                     <p className="text-xs text-muted-foreground">學員</p>
                   </div>
                 </div>
@@ -153,12 +255,12 @@ export default function AssignmentsPage() {
                 <CardContent className="pt-0">
                   <div className="border-t pt-4">
                     <p className="text-sm font-medium mb-3">配對的學員：</p>
-                    {students.length === 0 ? (
+                    {coach.students.length === 0 ? (
                       <p className="text-sm text-muted-foreground">尚無配對的學員</p>
                     ) : (
                       <div className="space-y-2">
-                        {students.map(student => (
-                          <div key={student.id} className="flex items-center justify-between p-2 rounded-lg bg-muted/50">
+                        {coach.students.map(({ id, student, feedback_count, assigned_at }) => (
+                          <div key={id} className="flex items-center justify-between p-2 rounded-lg bg-muted/50">
                             <div className="flex items-center gap-2">
                               {student.image ? (
                                 <img src={student.image} alt="" className="w-8 h-8 rounded-full object-cover" />
@@ -173,8 +275,8 @@ export default function AssignmentsPage() {
                               </div>
                             </div>
                             <div className="text-right text-xs text-muted-foreground">
-                              <p>{student.feedbackCount} 次回饋</p>
-                              <p>配對於 {new Date(student.assignedAt).toLocaleDateString('zh-TW')}</p>
+                              <p>{feedback_count} 次回饋</p>
+                              <p>配對於 {new Date(assigned_at).toLocaleDateString('zh-TW')}</p>
                             </div>
                           </div>
                         ))}
@@ -187,6 +289,14 @@ export default function AssignmentsPage() {
           );
         })}
       </div>
+
+      {coaches.length === 0 && (
+        <Card>
+          <CardContent className="py-12 text-center">
+            <p className="text-muted-foreground">目前沒有教練</p>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

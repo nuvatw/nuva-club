@@ -5,42 +5,21 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils/cn';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+import type { Event, EventRsvp, Profile } from '@/types/database';
 
-interface Attendee {
-  id: string;
-  name: string;
-  image?: string;
+interface EventWithHost extends Event {
+  host?: Profile;
 }
 
-interface EventDetail {
-  id: string;
-  title: string;
-  description: string;
-  type: 'online' | 'offline';
-  status: string;
-  startDate: string;
-  endDate: string;
-  location?: string;
-  address?: string;
-  meetingUrl?: string;
-  coverImage?: string;
-  rsvpCount: number;
-  maxAttendees?: number;
-  clubOnly: boolean;
-  host: {
-    id: string;
-    name: string;
-    image?: string;
-  } | null;
-  myRsvp: string | null;
-  isFull: boolean;
-  attendees: Attendee[];
+interface RsvpWithUser extends EventRsvp {
+  user?: Profile;
 }
 
 function formatDateTime(dateStr: string) {
-  return new Date(dateStr).toLocaleDateString('en-US', {
+  return new Date(dateStr).toLocaleDateString('zh-TW', {
     weekday: 'long',
     month: 'long',
     day: 'numeric',
@@ -57,109 +36,168 @@ export default function EventDetailPage({
 }) {
   const { eventId } = use(params);
   const router = useRouter();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [event, setEvent] = useState<EventWithHost | null>(null);
+  const [myRsvp, setMyRsvp] = useState<EventRsvp | null>(null);
+  const [attendees, setAttendees] = useState<RsvpWithUser[]>([]);
   const [loading, setLoading] = useState(true);
-  const [event, setEvent] = useState<EventDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [rsvpLoading, setRsvpLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchEvent();
-  }, [eventId]);
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
+    }
+  }, [authLoading, isAuthenticated, router]);
 
-  const fetchEvent = async () => {
-    try {
-      const response = await fetch(`/api/events/${eventId}`);
-      const data = await response.json();
+  useEffect(() => {
+    if (!profile) return;
 
-      if (data.error) {
-        setError(data.error.message);
-      } else {
-        setEvent(data.data.event);
+    const fetchData = async () => {
+      const supabase = getClient();
+
+      // Fetch event with host info
+      const { data: eventData, error: eventError } = await supabase
+        .from('events')
+        .select(`
+          *,
+          host:profiles!events_host_id_fkey(id, name, image)
+        `)
+        .eq('id', eventId)
+        .single();
+
+      if (eventError) {
+        setError('活動不存在');
+        setLoading(false);
+        return;
       }
-    } catch (err) {
-      setError('Failed to load event');
-    } finally {
+
+      setEvent(eventData);
+
+      // Fetch user's RSVP
+      const { data: rsvpData } = await supabase
+        .from('event_rsvps')
+        .select('*')
+        .eq('event_id', eventId)
+        .eq('user_id', profile.id)
+        .single();
+
+      if (rsvpData) {
+        setMyRsvp(rsvpData);
+      }
+
+      // Fetch attendees (going only)
+      const { data: attendeesData } = await supabase
+        .from('event_rsvps')
+        .select(`
+          *,
+          user:profiles(id, name, image)
+        `)
+        .eq('event_id', eventId)
+        .eq('status', 'going')
+        .limit(20);
+
+      if (attendeesData) {
+        setAttendees(attendeesData);
+      }
+
       setLoading(false);
-    }
-  };
+    };
 
-  const handleRsvp = async (status: 'going' | 'maybe' | 'not_going') => {
+    fetchData();
+  }, [profile, eventId]);
+
+  const handleJoinEvent = async () => {
+    if (!profile) return;
+
     setRsvpLoading(true);
-    try {
-      const response = await fetch(`/api/events/${eventId}/rsvp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
-      });
+    const supabase = getClient();
 
-      const data = await response.json();
+    const { data } = await supabase
+      .from('event_rsvps')
+      .insert({
+        event_id: eventId,
+        user_id: profile.id,
+      })
+      .select()
+      .single();
 
-      if (!response.ok) {
-        throw new Error(data.error?.message || 'RSVP failed');
-      }
-
-      fetchEvent(); // Refresh to get updated data
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'RSVP failed');
-    } finally {
-      setRsvpLoading(false);
+    if (data) {
+      setMyRsvp(data);
+      setAttendees(prev => [...prev, { ...data, user: profile }]);
     }
+
+    setRsvpLoading(false);
   };
 
-  if (loading) {
+  const handleCancelRsvp = async () => {
+    if (!profile || !myRsvp) return;
+
+    setRsvpLoading(true);
+    const supabase = getClient();
+
+    await supabase
+      .from('event_rsvps')
+      .delete()
+      .eq('id', myRsvp.id);
+
+    setMyRsvp(null);
+    setAttendees(prev => prev.filter(a => a.user_id !== profile.id));
+
+    setRsvpLoading(false);
+  };
+
+  if (authLoading || loading) {
     return (
-      <div className="space-y-6">
-        <Skeleton className="h-10 w-48" />
-        <Skeleton className="h-64 w-full" />
-        <Skeleton className="h-48 w-full" />
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
       </div>
     );
+  }
+
+  if (!profile) {
+    return null;
   }
 
   if (error || !event) {
     return (
       <div className="space-y-4">
-        <Button variant="outline" onClick={() => router.push('/events')}>
-          ← Back to Events
+        <Button variant="outline" onClick={() => router.push('/club/events')}>
+          ← 返回活動列表
         </Button>
         <Card>
           <CardContent className="py-12 text-center">
-            <p className="text-red-500">{error || 'Event not found'}</p>
+            <p className="text-red-500">{error || '活動不存在'}</p>
           </CardContent>
         </Card>
       </div>
     );
   }
 
+  const isFull = event.max_participants ? attendees.length >= event.max_participants : false;
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-4xl mx-auto">
       {/* Header */}
       <Button
         variant="ghost"
         size="sm"
-        onClick={() => router.push('/events')}
+        onClick={() => router.push('/club/events')}
       >
-        ← Back to Events
+        ← 返回活動列表
       </Button>
 
-      {/* Cover Image */}
-      {event.coverImage ? (
-        <div
-          className="h-64 rounded-lg bg-cover bg-center"
-          style={{ backgroundImage: `url(${event.coverImage})` }}
-        />
-      ) : (
-        <div
-          className={cn(
-            'h-64 rounded-lg flex items-center justify-center',
-            event.type === 'online'
-              ? 'bg-gradient-to-br from-blue-500/20 to-purple-500/20'
-              : 'bg-gradient-to-br from-green-500/20 to-teal-500/20'
-          )}
-        >
-          <span className="text-6xl">{event.type === 'online' ? '💻' : '🎉'}</span>
-        </div>
-      )}
+      {/* Cover Banner */}
+      <div
+        className={cn(
+          'h-48 rounded-lg flex items-center justify-center',
+          event.type === 'online'
+            ? 'bg-gradient-to-br from-blue-500/20 to-purple-500/20'
+            : 'bg-gradient-to-br from-green-500/20 to-teal-500/20'
+        )}
+      >
+        <span className="text-6xl">{event.type === 'online' ? '💻' : '🎉'}</span>
+      </div>
 
       {/* Event Info */}
       <div className="flex flex-col md:flex-row gap-6">
@@ -170,17 +208,12 @@ export default function EventDetailPage({
                 <div>
                   <CardTitle className="text-2xl">{event.title}</CardTitle>
                   <CardDescription className="mt-2">
-                    {formatDateTime(event.startDate)}
+                    {formatDateTime(event.start_date)}
                   </CardDescription>
                 </div>
-                <div className="flex flex-col gap-2 items-end">
-                  <Badge variant={event.type === 'online' ? 'default' : 'secondary'}>
-                    {event.type === 'online' ? '💻 Online' : '📍 Offline'}
-                  </Badge>
-                  {event.clubOnly && (
-                    <Badge variant="outline">Club Only</Badge>
-                  )}
-                </div>
+                <Badge variant={event.type === 'online' ? 'default' : 'secondary'}>
+                  {event.type === 'online' ? '💻 線上' : '📍 線下'}
+                </Badge>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -188,31 +221,14 @@ export default function EventDetailPage({
 
               {event.location && (
                 <div className="p-4 rounded-lg bg-muted">
-                  <h4 className="font-medium mb-1">📍 Location</h4>
+                  <h4 className="font-medium mb-1">📍 地點</h4>
                   <p>{event.location}</p>
-                  {event.address && (
-                    <p className="text-sm text-muted-foreground">{event.address}</p>
-                  )}
-                </div>
-              )}
-
-              {event.meetingUrl && event.myRsvp === 'going' && (
-                <div className="p-4 rounded-lg bg-primary/10">
-                  <h4 className="font-medium mb-2">🔗 Meeting Link</h4>
-                  <a
-                    href={event.meetingUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary underline break-all"
-                  >
-                    {event.meetingUrl}
-                  </a>
                 </div>
               )}
 
               {event.host && (
                 <div className="flex items-center gap-3 pt-4 border-t">
-                  <span className="text-sm text-muted-foreground">Hosted by</span>
+                  <span className="text-sm text-muted-foreground">主辦人</span>
                   {event.host.image ? (
                     <img
                       src={event.host.image}
@@ -237,43 +253,40 @@ export default function EventDetailPage({
         <div className="w-full md:w-80 space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">RSVP</CardTitle>
+              <CardTitle className="text-lg">報名</CardTitle>
               <CardDescription>
-                {event.rsvpCount} going
-                {event.maxAttendees && ` / ${event.maxAttendees} spots`}
+                {attendees.length} 人參加
+                {event.max_participants && ` / ${event.max_participants} 名額`}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              {event.isFull && event.myRsvp !== 'going' ? (
+              {isFull && !myRsvp ? (
                 <p className="text-center text-muted-foreground py-4">
-                  This event is at full capacity.
+                  此活動已額滿
                 </p>
               ) : (
                 <div className="space-y-2">
-                  <Button
-                    className="w-full"
-                    variant={event.myRsvp === 'going' ? 'default' : 'outline'}
-                    disabled={rsvpLoading}
-                    onClick={() => handleRsvp('going')}
-                  >
-                    {event.myRsvp === 'going' ? '✓ Going' : "I'm going!"}
-                  </Button>
-                  <Button
-                    className="w-full"
-                    variant={event.myRsvp === 'maybe' ? 'default' : 'outline'}
-                    disabled={rsvpLoading}
-                    onClick={() => handleRsvp('maybe')}
-                  >
-                    {event.myRsvp === 'maybe' ? '? Maybe' : 'Maybe'}
-                  </Button>
-                  {event.myRsvp && (
+                  {myRsvp ? (
+                    <>
+                      <Button className="w-full" variant="default" disabled>
+                        ✓ 已報名
+                      </Button>
+                      <Button
+                        className="w-full"
+                        variant="ghost"
+                        disabled={rsvpLoading}
+                        onClick={handleCancelRsvp}
+                      >
+                        取消報名
+                      </Button>
+                    </>
+                  ) : (
                     <Button
                       className="w-full"
-                      variant="ghost"
                       disabled={rsvpLoading}
-                      onClick={() => handleRsvp('not_going')}
+                      onClick={handleJoinEvent}
                     >
-                      Cancel RSVP
+                      {rsvpLoading ? '處理中...' : '我要參加'}
                     </Button>
                   )}
                 </div>
@@ -282,34 +295,37 @@ export default function EventDetailPage({
           </Card>
 
           {/* Attendees */}
-          {event.attendees.length > 0 && (
+          {attendees.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle className="text-lg">Attendees</CardTitle>
+                <CardTitle className="text-lg">參加者</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="flex flex-wrap gap-2">
-                  {event.attendees.map((attendee) => (
-                    <div
-                      key={attendee.id}
-                      className="flex items-center gap-2 p-2 rounded-lg bg-muted"
-                    >
-                      {attendee.image ? (
-                        <img
-                          src={attendee.image}
-                          alt=""
-                          className="w-6 h-6 rounded-full"
-                        />
-                      ) : (
-                        <div className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center">
-                          <span className="text-xs font-medium">
-                            {attendee.name.charAt(0).toUpperCase()}
-                          </span>
-                        </div>
-                      )}
-                      <span className="text-sm">{attendee.name}</span>
-                    </div>
-                  ))}
+                  {attendees.map((attendee) => {
+                    const user = attendee.user as Profile | undefined;
+                    return (
+                      <div
+                        key={attendee.id}
+                        className="flex items-center gap-2 p-2 rounded-lg bg-muted"
+                      >
+                        {user?.image ? (
+                          <img
+                            src={user.image}
+                            alt=""
+                            className="w-6 h-6 rounded-full"
+                          />
+                        ) : (
+                          <div className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center">
+                            <span className="text-xs font-medium">
+                              {user?.name?.charAt(0).toUpperCase() || '?'}
+                            </span>
+                          </div>
+                        )}
+                        <span className="text-sm">{user?.name || '匿名用戶'}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               </CardContent>
             </Card>

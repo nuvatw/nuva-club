@@ -1,22 +1,19 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils/cn';
-import { MOCK_POSTS, POST_CATEGORIES, type PostCategory } from '@/lib/mock/posts';
-import { useUser } from '@/lib/mock/user-context';
-import { useDatabase } from '@/lib/mock/database-context';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
 
-const categoryColors: Record<string, string> = {
-  general: 'bg-blue-100 text-blue-700 hover:bg-blue-200',
-  question: 'bg-purple-100 text-purple-700 hover:bg-purple-200',
-  showcase: 'bg-green-100 text-green-700 hover:bg-green-200',
-  resource: 'bg-amber-100 text-amber-700 hover:bg-amber-200',
-  challenge: 'bg-orange-100 text-orange-700 hover:bg-orange-200',
+const categoryConfig: Record<string, { label: string; color: string }> = {
+  question: { label: '發問', color: 'bg-purple-100 text-purple-700' },
+  share: { label: '分享', color: 'bg-green-100 text-green-700' },
+  challenge: { label: '挑戰', color: 'bg-orange-100 text-orange-700' },
 };
 
 function timeAgo(dateStr: string) {
@@ -28,257 +25,216 @@ function timeAgo(dateStr: string) {
   if (seconds < 3600) return `${Math.floor(seconds / 60)} 分鐘前`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小時前`;
   if (seconds < 604800) return `${Math.floor(seconds / 86400)} 天前`;
-  return date.toLocaleDateString('zh-TW');
+  return new Date(dateStr).toLocaleDateString('zh-TW');
 }
+
+interface Post {
+  id: string;
+  title: string;
+  content: string;
+  type: string;
+  likes_count: number;
+  created_at: string;
+  author: {
+    id: string;
+    name: string;
+    image: string | null;
+    level: number;
+  };
+  comments_count: number;
+}
+
+type FilterType = 'all' | 'question' | 'share' | 'challenge';
 
 export default function CommunityPage() {
   const router = useRouter();
-  const { user } = useUser();
-  const { state, firePost, unfirePost, createPost } = useDatabase();
-  const [filter, setFilter] = useState<PostCategory | 'all'>('all');
-  const [showNewPost, setShowNewPost] = useState(false);
-  const [newPost, setNewPost] = useState({ title: '', content: '', category: 'general' as 'general' | 'showcase' | 'question' | 'resource' | 'challenge' });
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [filter, setFilter] = useState<FilterType>('all');
+  const [loading, setLoading] = useState(true);
 
-  // 合併 mock posts 和 database posts，並根據篩選器過濾
-  const allPosts = useMemo(() => {
-    // 將 database posts 放在前面（較新），mock posts 在後面
-    const combined = [...state.posts, ...MOCK_POSTS.filter(mp => !state.posts.some(p => p.id === mp.id))];
-
-    // 根據篩選器過濾
-    const filtered = filter === 'all'
-      ? combined
-      : combined.filter(p => p.category === filter);
-
-    // 置頂貼文優先，然後按時間排序
-    return filtered.sort((a, b) => {
-      if (a.isPinned && !b.isPinned) return -1;
-      if (!a.isPinned && b.isPinned) return 1;
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    });
-  }, [state.posts, filter]);
-
-  const handleReaction = (postId: string, hasFired: boolean) => {
-    if (!user) return;
-    if (hasFired) {
-      unfirePost(postId, user.id);
-    } else {
-      firePost(postId, user.id);
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
     }
-  };
+  }, [authLoading, isAuthenticated, router]);
 
-  const handleCreatePost = () => {
-    if (!newPost.title.trim() || !newPost.content.trim() || !user) return;
+  useEffect(() => {
+    if (!profile) return;
 
-    createPost({
-      id: `post-${Date.now()}`,
-      userId: user.id,
-      userName: user.name,
-      userImage: user.image,
-      userLevel: user.level,
-      title: newPost.title,
-      content: newPost.content,
-      category: newPost.category,
-      fireCount: 0,
-      commentCount: 0,
-      comments: [],
-      createdAt: new Date().toISOString(),
-    });
+    const fetchPosts = async () => {
+      const supabase = getClient();
 
-    setShowNewPost(false);
-    setNewPost({ title: '', content: '', category: 'general' });
-  };
+      let query = supabase
+        .from('posts')
+        .select(`
+          id,
+          title,
+          content,
+          type,
+          likes_count,
+          created_at,
+          user_id,
+          author:profiles!posts_user_id_fkey(id, name, image, level)
+        `)
+        .order('created_at', { ascending: false })
+        .limit(20);
 
-  const categories = Object.entries(POST_CATEGORIES) as [PostCategory | 'all', typeof POST_CATEGORIES[keyof typeof POST_CATEGORIES]][];
+      if (filter !== 'all') {
+        query = query.eq('type', filter);
+      }
+
+      const { data } = await query;
+
+      if (data) {
+        // Get comment counts
+        const postIds = data.map((p: any) => p.id);
+        const { data: comments } = await supabase
+          .from('comments')
+          .select('post_id')
+          .in('post_id', postIds);
+
+        const commentCounts: Record<string, number> = {};
+        comments?.forEach((c: any) => {
+          commentCounts[c.post_id] = (commentCounts[c.post_id] || 0) + 1;
+        });
+
+        const postsWithCounts = data.map((p: any) => ({
+          ...p,
+          author: p.author,
+          comments_count: commentCounts[p.id] || 0,
+        }));
+
+        setPosts(postsWithCounts);
+      }
+      setLoading(false);
+    };
+
+    fetchPosts();
+  }, [profile, filter]);
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return null;
+  }
+
+  const filters: { value: FilterType; label: string }[] = [
+    { value: 'all', label: '全部' },
+    { value: 'question', label: '發問' },
+    { value: 'share', label: '分享' },
+    { value: 'challenge', label: '挑戰' },
+  ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-3xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">社群論壇</h1>
-          <p className="text-muted-foreground">
-            一起交流、分享、學習
-          </p>
+          <h1 className="text-2xl font-bold">社群</h1>
+          <p className="text-muted-foreground">與其他學員交流討論</p>
         </div>
-        <Button onClick={() => setShowNewPost(true)}>發表貼文</Button>
+        <Button>發表文章</Button>
       </div>
 
-      {/* 篩選器 */}
-      <div className="flex flex-wrap gap-2">
-        {categories.map(([key, { label, emoji }]) => (
-          <button
-            key={key}
-            onClick={() => setFilter(key)}
-            className={cn(
-              'inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all',
-              filter === key
-                ? 'bg-primary text-white shadow-sm'
-                : 'bg-muted hover:bg-muted/80 text-foreground'
-            )}
+      {/* Filter Tabs */}
+      <div className="flex gap-2">
+        {filters.map((f) => (
+          <Button
+            key={f.value}
+            variant={filter === f.value ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setFilter(f.value)}
           >
-            <span>{emoji}</span>
-            <span>{label}</span>
-          </button>
+            {f.label}
+          </Button>
         ))}
       </div>
 
-      {/* 新貼文表單 */}
-      {showNewPost && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">發表新貼文</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <input
-              type="text"
-              className="w-full p-3 rounded-lg border bg-background"
-              placeholder="標題"
-              value={newPost.title}
-              onChange={(e) => setNewPost((prev) => ({ ...prev, title: e.target.value }))}
-            />
-            <textarea
-              className="w-full min-h-[120px] p-3 rounded-lg border bg-background resize-none"
-              placeholder="分享你的想法..."
-              value={newPost.content}
-              onChange={(e) => setNewPost((prev) => ({ ...prev, content: e.target.value }))}
-            />
-            <div className="flex items-center gap-4">
-              <div className="flex gap-2">
-                {Object.entries(POST_CATEGORIES)
-                  .filter(([key]) => key !== 'all')
-                  .map(([key, { label, emoji }]) => (
-                    <button
-                      key={key}
-                      onClick={() => setNewPost((prev) => ({ ...prev, category: key as 'general' | 'showcase' | 'question' | 'resource' | 'challenge' }))}
-                      className={cn(
-                        'inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-sm transition-all',
-                        newPost.category === key
-                          ? categoryColors[key]
-                          : 'bg-muted hover:bg-muted/80'
-                      )}
-                    >
-                      <span>{emoji}</span>
-                      <span>{label}</span>
-                    </button>
-                  ))}
-              </div>
-              <div className="flex-1" />
-              <Button variant="outline" onClick={() => setShowNewPost(false)}>
-                取消
-              </Button>
-              <Button
-                onClick={handleCreatePost}
-                disabled={!newPost.title.trim() || !newPost.content.trim()}
-              >
-                發表
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* 貼文列表 */}
-      {allPosts.length === 0 ? (
-        <Card>
-          <CardContent className="py-12 text-center">
-            <p className="text-muted-foreground">還沒有貼文，來發表第一則吧！</p>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="space-y-4">
-          {allPosts.map((post) => (
-            <Card
-              key={post.id}
-              className={cn(
-                'hover:shadow-md transition-shadow cursor-pointer',
-                post.isPinned && 'border-primary bg-primary/5'
-              )}
-              onClick={() => router.push(`/community/${post.id}`)}
-            >
-              <CardContent className="pt-6">
-                <div className="flex gap-4">
-                  {/* 用戶頭像 */}
-                  {post.userImage ? (
-                    <img
-                      src={post.userImage}
-                      alt=""
-                      className="w-10 h-10 rounded-full flex-shrink-0 object-cover"
-                    />
-                  ) : (
-                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-                      <span className="text-sm font-medium">
-                        {post.userName.charAt(0).toUpperCase()}
-                      </span>
-                    </div>
-                  )}
-
-                  {/* 內容 */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-medium">{post.userName}</span>
-                      <span className="text-xs text-muted-foreground">Lv.{post.userLevel}</span>
-                      <span className="text-sm text-muted-foreground">
-                        {timeAgo(post.createdAt)}
-                      </span>
-                      {post.isPinned && (
-                        <Badge variant="outline" className="text-xs">
-                          📌 置頂
-                        </Badge>
-                      )}
-                    </div>
-
-                    <div className="flex items-start gap-2 mb-2">
-                      <span
-                        className={cn(
-                          'px-2 py-0.5 rounded text-xs font-medium',
-                          categoryColors[post.category] || 'bg-gray-100'
-                        )}
-                      >
-                        {POST_CATEGORIES[post.category as keyof typeof POST_CATEGORIES]?.emoji}{' '}
-                        {POST_CATEGORIES[post.category as keyof typeof POST_CATEGORIES]?.label || post.category}
-                      </span>
-                      <h3 className="font-semibold">{post.title}</h3>
-                    </div>
-
-                    <p className="text-sm text-muted-foreground line-clamp-2">{post.content}</p>
-
-                    {/* 媒體預覽 */}
-                    {post.mediaUrl && post.mediaType === 'image' && (
-                      <div className="mt-3 rounded-lg overflow-hidden max-w-xs">
+      {/* Posts List */}
+      <div className="space-y-4">
+        {posts.length === 0 ? (
+          <Card>
+            <CardContent className="py-12 text-center">
+              <p className="text-muted-foreground">目前沒有文章</p>
+            </CardContent>
+          </Card>
+        ) : (
+          posts.map((post) => (
+            <Link key={post.id} href={`/club/community/${post.id}`}>
+              <Card className="hover:shadow-md transition-shadow cursor-pointer">
+                <CardHeader className="pb-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-3">
+                      {post.author?.image ? (
                         <img
-                          src={post.mediaUrl}
+                          src={post.author.image}
                           alt=""
-                          className="w-full h-32 object-cover"
+                          className="w-10 h-10 rounded-full object-cover"
                         />
-                      </div>
-                    )}
-
-                    {/* 互動區 */}
-                    <div className="flex items-center gap-4 mt-3">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleReaction(post.id, post.hasFired || false);
-                        }}
-                        className={cn(
-                          'flex items-center gap-1 px-2 py-1 rounded transition-all',
-                          post.hasFired ? 'bg-orange-100 text-orange-700' : 'hover:bg-muted'
-                        )}
-                      >
-                        <span>🔥</span>
-                        <span className="text-sm font-medium">{post.fireCount}</span>
-                      </button>
-                      <div className="flex items-center gap-1 text-muted-foreground">
-                        <span>💬</span>
-                        <span className="text-sm">{post.commentCount}</span>
+                      ) : (
+                        <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                          <span className="font-medium">
+                            {post.author?.name?.charAt(0) || '?'}
+                          </span>
+                        </div>
+                      )}
+                      <div>
+                        <p className="font-medium text-sm">{post.author?.name || '匿名'}</p>
+                        <p className="text-xs text-muted-foreground">
+                          Lv.{post.author?.level || 1} · {timeAgo(post.created_at)}
+                        </p>
                       </div>
                     </div>
+                    {post.type && categoryConfig[post.type] && (
+                      <Badge className={cn('text-xs', categoryConfig[post.type].color)}>
+                        {categoryConfig[post.type].label}
+                      </Badge>
+                    )}
                   </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+                </CardHeader>
+                <CardContent>
+                  <CardTitle className="text-base mb-2">{post.title}</CardTitle>
+                  <p className="text-sm text-muted-foreground line-clamp-2">
+                    {post.content}
+                  </p>
+                  <div className="flex items-center gap-4 mt-3 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1">
+                      <HeartIcon className="w-4 h-4" />
+                      {post.likes_count}
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <MessageIcon className="w-4 h-4" />
+                      {post.comments_count}
+                    </span>
+                  </div>
+                </CardContent>
+              </Card>
+            </Link>
+          ))
+        )}
+      </div>
     </div>
+  );
+}
+
+function HeartIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12Z" />
+    </svg>
+  );
+}
+
+function MessageIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" />
+    </svg>
   );
 }

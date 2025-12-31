@@ -1,40 +1,110 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { useUser, MOCK_USERS, MOCK_COACH_STUDENTS, MOCK_CHALLENGES, MOCK_EVENTS } from '@/lib/mock';
-import { useSimulatedTime } from '@/lib/mock/simulated-time-context';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
 import { cn } from '@/lib/utils/cn';
 
-export default function GuardianDashboardPage() {
-  const { user } = useUser();
-  const { currentDate } = useSimulatedTime();
+interface DashboardStats {
+  totalUsers: number;
+  pendingApplications: number;
+  activeCoaches: number;
+  trialUsers: number;
+  upcomingEvents: number;
+  activeChallenges: number;
+  coachAssignments: number;
+}
 
-  if (!user) {
+export default function GuardianDashboardPage() {
+  const router = useRouter();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [stats, setStats] = useState<DashboardStats>({
+    totalUsers: 0,
+    pendingApplications: 0,
+    activeCoaches: 0,
+    trialUsers: 0,
+    upcomingEvents: 0,
+    activeChallenges: 0,
+    coachAssignments: 0,
+  });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
+    }
+  }, [authLoading, isAuthenticated, router]);
+
+  useEffect(() => {
+    if (!authLoading && profile && profile.role !== 'guardian') {
+      router.push('/club/dashboard');
+    }
+  }, [authLoading, profile, router]);
+
+  useEffect(() => {
+    if (!profile) return;
+
+    const fetchStats = async () => {
+      const supabase = getClient();
+      const now = new Date().toISOString();
+
+      const [
+        { count: totalUsers },
+        { count: pendingApplications },
+        { count: activeCoaches },
+        { count: trialUsers },
+        { count: upcomingEvents },
+        { count: activeChallenges },
+        { count: coachAssignments },
+      ] = await Promise.all([
+        supabase.from('profiles').select('*', { count: 'exact', head: true }),
+        supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('nunu_application_status', 'pending'),
+        supabase.from('profiles').select('*', { count: 'exact', head: true }).contains('available_roles', ['nunu']),
+        supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('subscription_status', 'trial'),
+        supabase.from('events').select('*', { count: 'exact', head: true }).gte('start_date', now),
+        supabase.from('challenges').select('*', { count: 'exact', head: true }).lte('start_date', now).gte('end_date', now),
+        supabase.from('coach_students').select('*', { count: 'exact', head: true }),
+      ]);
+
+      setStats({
+        totalUsers: totalUsers || 0,
+        pendingApplications: pendingApplications || 0,
+        activeCoaches: activeCoaches || 0,
+        trialUsers: trialUsers || 0,
+        upcomingEvents: upcomingEvents || 0,
+        activeChallenges: activeChallenges || 0,
+        coachAssignments: coachAssignments || 0,
+      });
+      setLoading(false);
+    };
+
+    fetchStats();
+  }, [profile]);
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
     return null;
   }
 
-  // Calculate stats
-  const totalUsers = MOCK_USERS.length;
-  const pendingApplications = MOCK_USERS.filter(u => u.nunuApplicationStatus === 'pending').length;
-  const activeCoaches = MOCK_USERS.filter(u => u.availableRoles.includes('nunu')).length;
-  const trialUsers = MOCK_USERS.filter(u => u.subscriptionStatus === 'trial').length;
-  const upcomingEvents = MOCK_EVENTS.filter(e => new Date(e.startDate) > currentDate).length;
-  const activeChallenges = MOCK_CHALLENGES.filter(c => {
-    const start = new Date(c.startDate);
-    const end = new Date(c.endDate);
-    return start <= currentDate && end >= currentDate;
-  }).length;
-
   const quickStats = [
-    { label: '總用戶', value: totalUsers, icon: '👥', href: '/club/guardian/users' },
-    { label: '待審核申請', value: pendingApplications, icon: '📋', href: '/club/guardian/applications', highlight: pendingApplications > 0 },
-    { label: '教練數', value: activeCoaches, icon: '🎓', href: '/club/guardian/users' },
-    { label: '試用用戶', value: trialUsers, icon: '⏳', href: '/club/guardian/users' },
-    { label: '進行中挑戰', value: activeChallenges, icon: '🎯', href: '/club/guardian/challenges' },
-    { label: '即將活動', value: upcomingEvents, icon: '📅', href: '/club/guardian/events' },
+    { label: '總用戶', value: stats.totalUsers, icon: '👥', href: '/club/guardian/users' },
+    { label: '待審核申請', value: stats.pendingApplications, icon: '📋', href: '/club/guardian/applications', highlight: stats.pendingApplications > 0 },
+    { label: '教練數', value: stats.activeCoaches, icon: '🎓', href: '/club/guardian/users' },
+    { label: '試用用戶', value: stats.trialUsers, icon: '⏳', href: '/club/guardian/users' },
+    { label: '進行中挑戰', value: stats.activeChallenges, icon: '🎯', href: '/club/guardian/challenges' },
+    { label: '即將活動', value: stats.upcomingEvents, icon: '📅', href: '/club/guardian/events' },
   ];
 
   return (
@@ -68,7 +138,7 @@ export default function GuardianDashboardPage() {
       </div>
 
       {/* Pending Applications Alert */}
-      {pendingApplications > 0 && (
+      {stats.pendingApplications > 0 && (
         <Card className="border-orange-300 bg-orange-50">
           <CardHeader className="pb-2">
             <CardTitle className="text-lg flex items-center gap-2">
@@ -77,27 +147,13 @@ export default function GuardianDashboardPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-3">
-              {MOCK_USERS.filter(u => u.nunuApplicationStatus === 'pending').map(applicant => (
-                <div key={applicant.id} className="flex items-center justify-between p-3 bg-white rounded-lg">
-                  <div className="flex items-center gap-3">
-                    {applicant.image ? (
-                      <img src={applicant.image} alt="" className="w-10 h-10 rounded-full object-cover" />
-                    ) : (
-                      <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                        <span className="font-medium">{applicant.name.charAt(0)}</span>
-                      </div>
-                    )}
-                    <div>
-                      <p className="font-medium">{applicant.name}</p>
-                      <p className="text-sm text-muted-foreground">第 {applicant.level} 級 · {applicant.email}</p>
-                    </div>
-                  </div>
-                  <Link href="/club/guardian/applications">
-                    <Button size="sm">審核</Button>
-                  </Link>
-                </div>
-              ))}
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">
+                有 {stats.pendingApplications} 個待審核的申請
+              </p>
+              <Link href="/club/guardian/applications">
+                <Button size="sm">前往審核</Button>
+              </Link>
             </div>
           </CardContent>
         </Card>
@@ -116,12 +172,12 @@ export default function GuardianDashboardPage() {
             <CardContent>
               <div className="flex gap-4 text-sm">
                 <div>
-                  <span className="text-muted-foreground">活躍：</span>
-                  <span className="font-medium">{MOCK_USERS.filter(u => u.subscriptionStatus === 'active').length}</span>
+                  <span className="text-muted-foreground">總用戶：</span>
+                  <span className="font-medium">{stats.totalUsers}</span>
                 </div>
                 <div>
                   <span className="text-muted-foreground">試用：</span>
-                  <span className="font-medium">{trialUsers}</span>
+                  <span className="font-medium">{stats.trialUsers}</span>
                 </div>
               </div>
             </CardContent>
@@ -140,7 +196,7 @@ export default function GuardianDashboardPage() {
               <div className="flex gap-4 text-sm">
                 <div>
                   <span className="text-muted-foreground">配對數：</span>
-                  <span className="font-medium">{MOCK_COACH_STUDENTS.length}</span>
+                  <span className="font-medium">{stats.coachAssignments}</span>
                 </div>
               </div>
             </CardContent>
@@ -159,11 +215,7 @@ export default function GuardianDashboardPage() {
               <div className="flex gap-4 text-sm">
                 <div>
                   <span className="text-muted-foreground">進行中：</span>
-                  <span className="font-medium">{activeChallenges}</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">總計：</span>
-                  <span className="font-medium">{MOCK_CHALLENGES.length}</span>
+                  <span className="font-medium">{stats.activeChallenges}</span>
                 </div>
               </div>
             </CardContent>
@@ -182,7 +234,7 @@ export default function GuardianDashboardPage() {
               <div className="flex gap-4 text-sm">
                 <div>
                   <span className="text-muted-foreground">即將舉行：</span>
-                  <span className="font-medium">{upcomingEvents}</span>
+                  <span className="font-medium">{stats.upcomingEvents}</span>
                 </div>
               </div>
             </CardContent>
@@ -211,13 +263,13 @@ export default function GuardianDashboardPage() {
         <Link href="/club/guardian/applications">
           <Card className={cn(
             'hover:shadow-md transition-all cursor-pointer h-full',
-            pendingApplications > 0 && 'border-orange-300'
+            stats.pendingApplications > 0 && 'border-orange-300'
           )}>
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">
                 📋 申請審核
-                {pendingApplications > 0 && (
-                  <Badge className="bg-orange-500">{pendingApplications}</Badge>
+                {stats.pendingApplications > 0 && (
+                  <Badge className="bg-orange-500">{stats.pendingApplications}</Badge>
                 )}
               </CardTitle>
               <CardDescription>審核教練申請</CardDescription>
@@ -226,8 +278,8 @@ export default function GuardianDashboardPage() {
               <div className="flex gap-4 text-sm">
                 <div>
                   <span className="text-muted-foreground">待審核：</span>
-                  <span className={cn('font-medium', pendingApplications > 0 && 'text-orange-600')}>
-                    {pendingApplications}
+                  <span className={cn('font-medium', stats.pendingApplications > 0 && 'text-orange-600')}>
+                    {stats.pendingApplications}
                   </span>
                 </div>
               </div>

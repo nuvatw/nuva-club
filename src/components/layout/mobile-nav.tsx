@@ -2,9 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useRole } from '@/lib/mock';
+import { useAuthContext } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils/cn';
-import type { UserRole } from '@/types';
 
 interface MobileNavProps {
   className?: string;
@@ -37,7 +36,7 @@ const guardianMobileItems: NavItem[] = [
   { href: '/club/messages', label: '訊息', icon: <MessageIcon /> },
 ];
 
-function getMobileNavForRole(role: UserRole): NavItem[] {
+function getMobileNavForRole(role: string): NavItem[] {
   switch (role) {
     case 'guardian':
       return guardianMobileItems;
@@ -50,7 +49,8 @@ function getMobileNavForRole(role: UserRole): NavItem[] {
 
 export function MobileNav({ className }: MobileNavProps) {
   const pathname = usePathname();
-  const { role } = useRole();
+  const { profile } = useAuthContext();
+  const role = profile?.role || 'vava';
   const navItems = getMobileNavForRole(role);
 
   return (

@@ -1,22 +1,25 @@
 'use client';
 
-import { useState, useMemo, use } from 'react';
+import { useState, useEffect, use } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils/cn';
-import { useUser } from '@/lib/mock/user-context';
-import { useDatabase } from '@/lib/mock/database-context';
-import { MOCK_POSTS, POST_CATEGORIES, type MockComment } from '@/lib/mock/posts';
-import { MOCK_IMAGE_OPTIONS } from '@/lib/mock/messages';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+import type { Post, Comment, Profile } from '@/types/database';
 
 const categoryColors: Record<string, string> = {
-  general: 'bg-blue-100 text-blue-700',
   question: 'bg-purple-100 text-purple-700',
-  showcase: 'bg-green-100 text-green-700',
-  resource: 'bg-amber-100 text-amber-700',
+  share: 'bg-green-100 text-green-700',
   challenge: 'bg-orange-100 text-orange-700',
+};
+
+const categoryLabels: Record<string, { emoji: string; label: string }> = {
+  question: { emoji: '❓', label: '發問' },
+  share: { emoji: '🏆', label: '分享' },
+  challenge: { emoji: '🎯', label: '挑戰' },
 };
 
 function timeAgo(dateStr: string) {
@@ -31,6 +34,14 @@ function timeAgo(dateStr: string) {
   return date.toLocaleDateString('zh-TW');
 }
 
+interface PostWithAuthor extends Post {
+  author?: Profile;
+}
+
+interface CommentWithAuthor extends Comment {
+  author?: Profile;
+}
+
 export default function PostDetailPage({
   params,
 }: {
@@ -38,59 +49,144 @@ export default function PostDetailPage({
 }) {
   const { postId } = use(params);
   const router = useRouter();
-  const { user } = useUser();
-  const { state, firePost, unfirePost } = useDatabase();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [post, setPost] = useState<PostWithAuthor | null>(null);
+  const [comments, setComments] = useState<CommentWithAuthor[]>([]);
+  const [hasFired, setHasFired] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [newComment, setNewComment] = useState('');
-  const [showImagePicker, setShowImagePicker] = useState(false);
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [enlargedImage, setEnlargedImage] = useState<string | null>(null);
-  const [localComments, setLocalComments] = useState<MockComment[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // 從 database state 或 mock data 取得貼文
-  const post = useMemo(() => {
-    const dbPost = state.posts.find(p => p.id === postId);
-    if (dbPost) return dbPost;
-    return MOCK_POSTS.find(p => p.id === postId);
-  }, [state.posts, postId]);
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
+    }
+  }, [authLoading, isAuthenticated, router]);
 
-  // 合併原有留言和本地新增的留言
-  const allComments = useMemo(() => {
-    if (!post) return [];
-    return [...post.comments, ...localComments];
-  }, [post, localComments]);
+  useEffect(() => {
+    if (!profile) return;
 
-  const handleReaction = () => {
-    if (!user || !post) return;
-    const hasFired = post.firedByUsers?.includes(user.id) || post.hasFired;
+    const fetchData = async () => {
+      const supabase = getClient();
+
+      // Fetch post with author
+      const { data: postData, error: postError } = await supabase
+        .from('posts')
+        .select(`
+          *,
+          author:profiles!posts_user_id_fkey(id, name, image, level)
+        `)
+        .eq('id', postId)
+        .single();
+
+      if (postError) {
+        setError('找不到這則貼文');
+        setLoading(false);
+        return;
+      }
+
+      setPost(postData);
+
+      // Check if user has fired
+      const { data: fireData } = await supabase
+        .from('post_fires')
+        .select('id')
+        .eq('post_id', postId)
+        .eq('user_id', profile.id)
+        .single();
+
+      setHasFired(!!fireData);
+
+      // Fetch comments
+      const { data: commentsData } = await supabase
+        .from('comments')
+        .select(`
+          *,
+          author:profiles!comments_user_id_fkey(id, name, image)
+        `)
+        .eq('post_id', postId)
+        .order('created_at', { ascending: true });
+
+      if (commentsData) {
+        setComments(commentsData);
+      }
+
+      setLoading(false);
+    };
+
+    fetchData();
+  }, [profile, postId]);
+
+  const handleReaction = async () => {
+    if (!profile || !post) return;
+
+    const supabase = getClient();
+
     if (hasFired) {
-      unfirePost(post.id, user.id);
+      // Remove fire
+      await supabase
+        .from('post_fires')
+        .delete()
+        .eq('post_id', postId)
+        .eq('user_id', profile.id);
+
+      setHasFired(false);
+      setPost(prev => prev ? { ...prev, likes_count: prev.likes_count - 1 } : null);
     } else {
-      firePost(post.id, user.id);
+      // Add fire
+      await supabase
+        .from('post_fires')
+        .insert({ post_id: postId, user_id: profile.id });
+
+      setHasFired(true);
+      setPost(prev => prev ? { ...prev, likes_count: prev.likes_count + 1 } : null);
     }
   };
 
-  const handleAddComment = () => {
-    if ((!newComment.trim() && !selectedImage) || !user) return;
+  const handleAddComment = async () => {
+    if (!newComment.trim() || !profile) return;
 
-    const newCommentObj: MockComment = {
-      id: `comment-${Date.now()}`,
-      userId: user.id,
-      userName: user.name,
-      userImage: user.image,
-      content: newComment.trim(),
-      mediaUrl: selectedImage || undefined,
-      mediaType: selectedImage ? 'image' : undefined,
-      fireCount: 0,
-      createdAt: new Date().toISOString(),
-    };
+    setSubmitting(true);
+    const supabase = getClient();
 
-    setLocalComments(prev => [...prev, newCommentObj]);
-    setNewComment('');
-    setSelectedImage(null);
-    setShowImagePicker(false);
+    const { data, error } = await supabase
+      .from('comments')
+      .insert({
+        id: crypto.randomUUID(),
+        post_id: postId,
+        user_id: profile.id,
+        content: newComment.trim(),
+      })
+      .select(`
+        *,
+        author:profiles!comments_user_id_fkey(id, name, image)
+      `)
+      .single();
+
+    if (data && !error) {
+      setComments(prev => [...prev, data]);
+      setNewComment('');
+      // Update comment count
+      setPost(prev => prev ? { ...prev, comments_count: prev.comments_count + 1 } : null);
+    }
+
+    setSubmitting(false);
   };
 
-  if (!post) {
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return null;
+  }
+
+  if (error || !post) {
     return (
       <div className="space-y-4">
         <Button variant="outline" onClick={() => router.push('/community')}>
@@ -98,19 +194,19 @@ export default function PostDetailPage({
         </Button>
         <Card>
           <CardContent className="py-12 text-center">
-            <p className="text-red-500">找不到這則貼文</p>
+            <p className="text-red-500">{error || '找不到這則貼文'}</p>
           </CardContent>
         </Card>
       </div>
     );
   }
 
-  const category = POST_CATEGORIES[post.category as keyof typeof POST_CATEGORIES];
-  const hasFired = user ? (post.firedByUsers?.includes(user.id) || post.hasFired) : false;
+  const author = post.author as Profile | undefined;
+  const category = categoryLabels[post.type];
 
   return (
-    <div className="space-y-6">
-      {/* 返回按鈕 */}
+    <div className="space-y-6 max-w-3xl mx-auto">
+      {/* Back Button */}
       <Button
         variant="ghost"
         size="sm"
@@ -119,67 +215,61 @@ export default function PostDetailPage({
         ← 返回論壇
       </Button>
 
-      {/* 貼文內容 */}
+      {/* Post Content */}
       <Card>
         <CardContent className="pt-6">
           <div className="flex gap-4">
-            {/* 用戶頭像 */}
-            {post.userImage ? (
+            {/* User Avatar */}
+            {author?.image ? (
               <img
-                src={post.userImage}
+                src={author.image}
                 alt=""
-                className="w-12 h-12 rounded-full flex-shrink-0 object-cover"
+                className="w-12 h-12 rounded-full shrink-0 object-cover"
               />
             ) : (
-              <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+              <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
                 <span className="text-lg font-medium">
-                  {post.userName.charAt(0).toUpperCase()}
+                  {author?.name?.charAt(0).toUpperCase() || '?'}
                 </span>
               </div>
             )}
 
-            {/* 內容 */}
+            {/* Content */}
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-2">
-                <span className="font-medium">{post.userName}</span>
-                <span className="text-xs text-muted-foreground">Lv.{post.userLevel}</span>
+                <span className="font-medium">{author?.name || '匿名用戶'}</span>
+                <span className="text-xs text-muted-foreground">Lv.{author?.level || 1}</span>
                 <span className="text-sm text-muted-foreground">
-                  {timeAgo(post.createdAt)}
+                  {timeAgo(post.created_at)}
                 </span>
-                {post.isPinned && (
-                  <Badge variant="outline" className="text-xs">
-                    📌 置頂
-                  </Badge>
-                )}
               </div>
 
               <div className="flex items-center gap-2 mb-3">
                 <span
                   className={cn(
                     'px-2 py-0.5 rounded text-xs font-medium',
-                    categoryColors[post.category] || 'bg-gray-100'
+                    categoryColors[post.type] || 'bg-gray-100'
                   )}
                 >
-                  {category?.emoji} {category?.label || post.category}
+                  {category?.emoji} {category?.label || post.type}
                 </span>
                 <h1 className="text-xl font-bold">{post.title}</h1>
               </div>
 
               <p className="whitespace-pre-wrap mb-4 text-foreground">{post.content}</p>
 
-              {/* 媒體內容 */}
-              {post.mediaUrl && post.mediaType === 'image' && (
+              {/* Image */}
+              {post.image && (
                 <div className="mb-4">
                   <img
-                    src={post.mediaUrl}
+                    src={post.image}
                     alt=""
-                    className="max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
-                    onClick={() => setEnlargedImage(post.mediaUrl!)}
+                    className="max-w-full rounded-lg"
                   />
                 </div>
               )}
 
-              {/* 互動區 */}
+              {/* Interactions */}
               <div className="flex items-center gap-4 pt-4 border-t">
                 <button
                   onClick={handleReaction}
@@ -191,11 +281,11 @@ export default function PostDetailPage({
                   )}
                 >
                   <span className="text-xl">🔥</span>
-                  <span className="font-medium">{post.fireCount}</span>
+                  <span className="font-medium">{post.likes_count}</span>
                 </button>
                 <div className="flex items-center gap-2 text-muted-foreground">
                   <span>💬</span>
-                  <span>{allComments.length} 則留言</span>
+                  <span>{comments.length} 則留言</span>
                 </div>
               </div>
             </div>
@@ -203,7 +293,7 @@ export default function PostDetailPage({
         </CardContent>
       </Card>
 
-      {/* 新增留言 */}
+      {/* Add Comment */}
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">發表留言</CardTitle>
@@ -216,177 +306,63 @@ export default function PostDetailPage({
               value={newComment}
               onChange={(e) => setNewComment(e.target.value)}
             />
-
-            {/* 圖片選擇器 */}
-            {showImagePicker && (
-              <div className="p-3 bg-muted/30 rounded-lg">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium">選擇圖片</span>
-                  <button
-                    onClick={() => {
-                      setShowImagePicker(false);
-                      setSelectedImage(null);
-                    }}
-                    className="text-sm text-muted-foreground hover:text-foreground"
-                  >
-                    取消
-                  </button>
-                </div>
-                <div className="grid grid-cols-6 gap-2">
-                  {MOCK_IMAGE_OPTIONS.map((img) => (
-                    <button
-                      key={img.id}
-                      onClick={() => setSelectedImage(img.url)}
-                      className={cn(
-                        'aspect-square rounded-lg overflow-hidden border-2 transition-all',
-                        selectedImage === img.url
-                          ? 'border-primary ring-2 ring-primary/20'
-                          : 'border-transparent hover:border-muted-foreground/30'
-                      )}
-                    >
-                      <img
-                        src={img.url}
-                        alt={img.label}
-                        className="w-full h-full object-cover"
-                      />
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* 已選圖片預覽 */}
-            {selectedImage && !showImagePicker && (
-              <div className="flex items-center gap-2 p-2 bg-muted/30 rounded-lg">
-                <img
-                  src={selectedImage}
-                  alt=""
-                  className="w-16 h-16 rounded-lg object-cover"
-                />
-                <button
-                  onClick={() => setSelectedImage(null)}
-                  className="text-sm text-red-500 hover:underline"
-                >
-                  移除
-                </button>
-              </div>
-            )}
-
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowImagePicker(!showImagePicker)}
-                className={cn(
-                  'p-3 rounded-lg border transition-colors',
-                  showImagePicker ? 'bg-primary text-white' : 'hover:bg-muted'
-                )}
-                title="上傳圖片"
-              >
-                📷
-              </button>
-              <div className="flex-1" />
+            <div className="flex justify-end">
               <Button
                 onClick={handleAddComment}
-                disabled={!newComment.trim() && !selectedImage}
+                disabled={!newComment.trim() || submitting}
               >
-                發表留言
+                {submitting ? '發表中...' : '發表留言'}
               </Button>
             </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* 留言列表 */}
+      {/* Comments List */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">留言 ({allComments.length})</CardTitle>
+          <CardTitle className="text-lg">留言 ({comments.length})</CardTitle>
         </CardHeader>
         <CardContent>
-          {allComments.length === 0 ? (
+          {comments.length === 0 ? (
             <p className="text-center py-8 text-muted-foreground">
               還沒有留言，來當第一個吧！
             </p>
           ) : (
             <div className="space-y-4">
-              {allComments.map((comment) => (
-                <div key={comment.id} className="flex gap-3 p-3 rounded-lg bg-muted/30">
-                  {comment.userImage ? (
-                    <img
-                      src={comment.userImage}
-                      alt=""
-                      className="w-10 h-10 rounded-full flex-shrink-0 object-cover"
-                    />
-                  ) : (
-                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-                      <span className="text-sm font-medium">
-                        {comment.userName.charAt(0).toUpperCase()}
-                      </span>
-                    </div>
-                  )}
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-medium text-sm">{comment.userName}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {timeAgo(comment.createdAt)}
-                      </span>
-                    </div>
-                    {comment.content && (
-                      <p className="text-sm whitespace-pre-wrap mb-2">{comment.content}</p>
-                    )}
-                    {/* 留言圖片 */}
-                    {comment.mediaUrl && comment.mediaType === 'image' && (
-                      <div
-                        className="mt-2 cursor-pointer"
-                        onClick={() => setEnlargedImage(comment.mediaUrl!)}
-                      >
-                        <img
-                          src={comment.mediaUrl}
-                          alt=""
-                          className="max-w-xs rounded-lg hover:opacity-90 transition-opacity"
-                        />
+              {comments.map((comment) => {
+                const commentAuthor = comment.author as Profile | undefined;
+                return (
+                  <div key={comment.id} className="flex gap-3 p-3 rounded-lg bg-muted/30">
+                    {commentAuthor?.image ? (
+                      <img
+                        src={commentAuthor.image}
+                        alt=""
+                        className="w-10 h-10 rounded-full shrink-0 object-cover"
+                      />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                        <span className="text-sm font-medium">
+                          {commentAuthor?.name?.charAt(0).toUpperCase() || '?'}
+                        </span>
                       </div>
                     )}
-                    {/* 火焰反應 */}
-                    <div className="flex items-center gap-2 mt-2">
-                      <button
-                        className={cn(
-                          'flex items-center gap-1 px-2 py-1 rounded text-xs transition-all',
-                          comment.hasFired
-                            ? 'bg-orange-100 text-orange-700'
-                            : 'hover:bg-muted'
-                        )}
-                      >
-                        🔥 {comment.fireCount}
-                      </button>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-medium text-sm">{commentAuthor?.name || '匿名用戶'}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {timeAgo(comment.created_at)}
+                        </span>
+                      </div>
+                      <p className="text-sm whitespace-pre-wrap">{comment.content}</p>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </CardContent>
       </Card>
-
-      {/* 圖片放大查看 */}
-      {enlargedImage && (
-        <div
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
-          onClick={() => setEnlargedImage(null)}
-        >
-          <div className="relative max-w-4xl max-h-[90vh]">
-            <img
-              src={enlargedImage}
-              alt=""
-              className="max-w-full max-h-[90vh] object-contain rounded-lg"
-            />
-            <button
-              onClick={() => setEnlargedImage(null)}
-              className="absolute top-4 right-4 w-10 h-10 bg-white/20 hover:bg-white/30 rounded-full flex items-center justify-center text-white text-xl"
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

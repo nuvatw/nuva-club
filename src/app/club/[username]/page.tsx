@@ -1,67 +1,113 @@
 'use client';
 
-import { use } from 'react';
+import { use, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { MOCK_USERS, MOCK_CHALLENGES } from '@/lib/mock';
-import { DevGate } from '@/components/club/dev-gate';
+import { getClient } from '@/lib/supabase/client';
+import type { Profile, Post } from '@/types/database';
 
 interface ProfilePageProps {
   params: Promise<{ username: string }>;
 }
 
-// Mock function to get user by username
-function getUserByUsername(username: string) {
-  // In a real app, this would be an API call
-  const mockUser = MOCK_USERS.find((u) => u.name.toLowerCase().includes(username.charAt(0)));
-
-  if (!mockUser) {
-    return null;
-  }
-
-  return {
-    ...mockUser,
-    username: username.toLowerCase(),
-    bio: '熱愛學習，正在成為更好的自己。',
-    joinedAt: '2024-01-15',
-    challengesCompleted: 3,
-    coursesCompleted: 12,
-    followers: 42,
-    following: 28,
-  };
+interface UserProfile extends Profile {
+  challenges_completed?: number;
+  courses_completed?: number;
 }
 
-// Mock challenge submissions
-function getUserSubmissions(userId: string) {
-  return [
-    {
-      id: '1',
-      challengeId: MOCK_CHALLENGES[0]?.id,
-      challengeEmoji: MOCK_CHALLENGES[0]?.theme.emoji || '',
-      challengeTitle: MOCK_CHALLENGES[0]?.theme.title || '挑戰',
-      content: '這是我這個月的挑戰心得分享...',
-      imageUrl: 'https://picsum.photos/seed/sub1/400/300',
-      fireCount: 24,
-      createdAt: '2024-12-20',
-    },
-    {
-      id: '2',
-      challengeId: MOCK_CHALLENGES[1]?.id,
-      challengeEmoji: MOCK_CHALLENGES[1]?.theme.emoji || '',
-      challengeTitle: MOCK_CHALLENGES[1]?.theme.title || '挑戰',
-      content: '完成了一個很有意義的專案...',
-      imageUrl: 'https://picsum.photos/seed/sub2/400/300',
-      fireCount: 18,
-      createdAt: '2024-11-15',
-    },
-  ];
+interface ChallengeSubmission {
+  id: string;
+  challenge_id: string;
+  challenge_title: string;
+  content: string;
+  image: string | null;
+  likes_count: number;
+  created_at: string;
 }
 
 function ProfileContent({ username }: { username: string }) {
-  const user = getUserByUsername(username);
-  const submissions = user ? getUserSubmissions(user.id) : [];
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [submissions, setSubmissions] = useState<ChallengeSubmission[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchUser = async () => {
+      const supabase = getClient();
+
+      // Try to find user by name (case insensitive partial match)
+      const { data: userData } = await supabase
+        .from('profiles')
+        .select('*')
+        .ilike('name', `%${username}%`)
+        .limit(1)
+        .single();
+
+      if (userData) {
+        // Get completed courses count
+        const { count: coursesCount } = await supabase
+          .from('user_course_progress')
+          .select('*', { count: 'exact', head: true })
+          .eq('user_id', userData.id)
+          .eq('is_completed', true);
+
+        // Get completed challenges count
+        const { count: challengesCount } = await supabase
+          .from('challenge_participations')
+          .select('*', { count: 'exact', head: true })
+          .eq('user_id', userData.id)
+          .not('submitted_at', 'is', null);
+
+        setUser({
+          ...userData,
+          challenges_completed: challengesCount || 0,
+          courses_completed: coursesCount || 0,
+        });
+
+        // Fetch user's challenge submissions (posts of type 'challenge')
+        const { data: postsData } = await supabase
+          .from('posts')
+          .select(`
+            id,
+            challenge_id,
+            content,
+            image,
+            likes_count,
+            created_at,
+            challenge:challenges(title)
+          `)
+          .eq('user_id', userData.id)
+          .eq('type', 'challenge')
+          .order('likes_count', { ascending: false })
+          .limit(6);
+
+        if (postsData) {
+          setSubmissions(postsData.map(p => ({
+            id: p.id,
+            challenge_id: p.challenge_id || '',
+            challenge_title: (p.challenge as any)?.title || '挑戰作品',
+            content: p.content,
+            image: p.image,
+            likes_count: p.likes_count,
+            created_at: p.created_at,
+          })));
+        }
+      }
+
+      setLoading(false);
+    };
+
+    fetchUser();
+  }, [username]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   if (!user) {
     return (
@@ -109,11 +155,17 @@ function ProfileContent({ username }: { username: string }) {
           <div className="flex flex-col md:flex-row items-center md:items-start gap-6">
             {/* Avatar */}
             <div className="relative">
-              <img
-                src={user.image}
-                alt={user.name}
-                className="w-32 h-32 rounded-full object-cover border-4 border-white shadow-lg"
-              />
+              {user.image ? (
+                <img
+                  src={user.image}
+                  alt={user.name}
+                  className="w-32 h-32 rounded-full object-cover border-4 border-white shadow-lg"
+                />
+              ) : (
+                <div className="w-32 h-32 rounded-full border-4 border-white shadow-lg bg-primary/10 flex items-center justify-center">
+                  <span className="text-4xl font-bold">{user.name.charAt(0)}</span>
+                </div>
+              )}
               <div className="absolute -bottom-2 -right-2 bg-primary text-white text-xs font-bold px-2 py-1 rounded-full">
                 Lv.{user.level}
               </div>
@@ -127,22 +179,17 @@ function ProfileContent({ username }: { username: string }) {
                   {getLevelStage(user.level)}
                 </Badge>
               </div>
-              <p className="text-muted-foreground mb-4">@{user.username}</p>
-              <p className="text-gray-600 mb-4 max-w-md">{user.bio}</p>
+              <p className="text-muted-foreground mb-4">@{username.toLowerCase()}</p>
 
               {/* Stats */}
               <div className="flex justify-center md:justify-start gap-6 text-sm">
                 <div className="text-center">
-                  <div className="font-bold text-lg">{user.challengesCompleted}</div>
+                  <div className="font-bold text-lg">{user.challenges_completed || 0}</div>
                   <div className="text-muted-foreground">挑戰完成</div>
                 </div>
                 <div className="text-center">
-                  <div className="font-bold text-lg">{user.coursesCompleted}</div>
+                  <div className="font-bold text-lg">{user.courses_completed || 0}</div>
                   <div className="text-muted-foreground">課程完成</div>
-                </div>
-                <div className="text-center">
-                  <div className="font-bold text-lg">{user.followers}</div>
-                  <div className="text-muted-foreground">追蹤者</div>
                 </div>
               </div>
             </div>
@@ -165,15 +212,21 @@ function ProfileContent({ username }: { username: string }) {
             <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
               {submissions.map((submission) => (
                 <Card key={submission.id} className="overflow-hidden hover:shadow-lg transition-shadow">
-                  <div className="aspect-video relative">
-                    <img
-                      src={submission.imageUrl}
-                      alt={submission.challengeTitle}
-                      className="w-full h-full object-cover"
-                    />
+                  <div className="aspect-video relative bg-muted">
+                    {submission.image ? (
+                      <img
+                        src={submission.image}
+                        alt={submission.challenge_title}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <span className="text-4xl">🏆</span>
+                      </div>
+                    )}
                     <div className="absolute top-2 left-2 bg-black/60 text-white text-xs px-2 py-1 rounded-full flex items-center gap-1">
-                      <span>{submission.challengeEmoji}</span>
-                      <span>{submission.challengeTitle}</span>
+                      <span>🏆</span>
+                      <span>{submission.challenge_title}</span>
                     </div>
                   </div>
                   <CardContent className="p-4">
@@ -183,9 +236,9 @@ function ProfileContent({ username }: { username: string }) {
                     <div className="flex items-center justify-between text-sm text-muted-foreground">
                       <span className="flex items-center gap-1">
                         <span className="text-orange-500">🔥</span>
-                        {submission.fireCount}
+                        {submission.likes_count}
                       </span>
-                      <span>{submission.createdAt}</span>
+                      <span>{new Date(submission.created_at).toLocaleDateString('zh-TW')}</span>
                     </div>
                   </CardContent>
                 </Card>
@@ -200,7 +253,7 @@ function ProfileContent({ username }: { username: string }) {
 
         {/* Join Date */}
         <div className="text-center text-sm text-muted-foreground">
-          加入於 {user.joinedAt}
+          加入於 {new Date(user.created_at).toLocaleDateString('zh-TW')}
         </div>
       </div>
     </div>
@@ -210,9 +263,5 @@ function ProfileContent({ username }: { username: string }) {
 export default function ProfilePage({ params }: ProfilePageProps) {
   const { username } = use(params);
 
-  return (
-    <DevGate>
-      <ProfileContent username={username} />
-    </DevGate>
-  );
+  return <ProfileContent username={username} />;
 }

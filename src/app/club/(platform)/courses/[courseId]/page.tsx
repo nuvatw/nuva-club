@@ -1,14 +1,30 @@
 'use client';
 
-import { use, useEffect } from 'react';
+import { use, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils/cn';
-import { useUser, useDatabase, LEVELS } from '@/lib/mock';
-import type { LevelNumber } from '@/types';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+import type { Course, Lesson, UserCourseProgress, UserLessonProgress } from '@/types/database';
+
+const LEVELS = [
+  { level: 1, displayName: 'Lv.1' },
+  { level: 2, displayName: 'Lv.2' },
+  { level: 3, displayName: 'Lv.3' },
+  { level: 4, displayName: 'Lv.4' },
+  { level: 5, displayName: 'Lv.5' },
+  { level: 6, displayName: 'Lv.6' },
+  { level: 7, displayName: 'Lv.7' },
+  { level: 8, displayName: 'Lv.8' },
+  { level: 9, displayName: 'Lv.9' },
+  { level: 10, displayName: 'Lv.10' },
+  { level: 11, displayName: 'Lv.11' },
+  { level: 12, displayName: 'Lv.12' },
+];
 
 function formatDuration(minutes: number): string {
   if (minutes >= 60) {
@@ -19,6 +35,10 @@ function formatDuration(minutes: number): string {
   return `${minutes} 分鐘`;
 }
 
+interface CourseWithLessons extends Course {
+  lessons: Lesson[];
+}
+
 export default function CourseDetailPage({
   params,
 }: {
@@ -26,19 +46,113 @@ export default function CourseDetailPage({
 }) {
   const { courseId } = use(params);
   const router = useRouter();
-  const { user, isLoggedIn } = useUser();
-  const { state, getCourseProgress, enrollCourse } = useDatabase();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [course, setCourse] = useState<CourseWithLessons | null>(null);
+  const [progress, setProgress] = useState<UserCourseProgress | null>(null);
+  const [completedLessons, setCompletedLessons] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [enrolling, setEnrolling] = useState(false);
 
   useEffect(() => {
-    if (!isLoggedIn) {
+    if (!authLoading && !isAuthenticated) {
       router.push('/club/login');
     }
-  }, [isLoggedIn, router]);
+  }, [authLoading, isAuthenticated, router]);
 
-  const course = state.courses.find(c => c.id === courseId);
-  const progress = getCourseProgress(courseId);
+  useEffect(() => {
+    if (!profile) return;
 
-  if (!user) {
+    const fetchData = async () => {
+      const supabase = getClient();
+
+      // Fetch course with lessons
+      const { data: courseData } = await supabase
+        .from('courses')
+        .select('*')
+        .eq('id', courseId)
+        .single();
+
+      if (courseData) {
+        const { data: lessonsData } = await supabase
+          .from('lessons')
+          .select('*')
+          .eq('course_id', courseId)
+          .order('order', { ascending: true });
+
+        setCourse({
+          ...courseData,
+          lessons: lessonsData || [],
+        });
+      }
+
+      // Fetch user progress
+      const { data: progressData } = await supabase
+        .from('user_course_progress')
+        .select('*')
+        .eq('user_id', profile.id)
+        .eq('course_id', courseId)
+        .single();
+
+      if (progressData) {
+        setProgress(progressData);
+      }
+
+      // Fetch completed lessons
+      const { data: lessonProgressData } = await supabase
+        .from('user_lesson_progress')
+        .select('lesson_id')
+        .eq('user_id', profile.id)
+        .eq('course_id', courseId)
+        .eq('is_completed', true);
+
+      if (lessonProgressData) {
+        setCompletedLessons(lessonProgressData.map(lp => lp.lesson_id));
+      }
+
+      setLoading(false);
+    };
+
+    fetchData();
+  }, [profile, courseId]);
+
+  const handleEnroll = async () => {
+    if (!profile || !course) return;
+
+    setEnrolling(true);
+    const supabase = getClient();
+
+    await supabase.from('user_course_progress').insert({
+      user_id: profile.id,
+      course_id: courseId,
+      is_enrolled: true,
+      enrolled_at: new Date().toISOString(),
+    });
+
+    setProgress({
+      id: '',
+      user_id: profile.id,
+      course_id: courseId,
+      is_enrolled: true,
+      enrolled_at: new Date().toISOString(),
+      is_completed: false,
+      completed_at: null,
+      current_lesson_id: course.lessons[0]?.id || null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    setEnrolling(false);
+  };
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
     return null;
   }
 
@@ -57,28 +171,18 @@ export default function CourseDetailPage({
     );
   }
 
-  const getLevelInfo = (level: number) => {
-    return LEVELS.find((l) => l.level === level);
-  };
-
-  const levelInfo = getLevelInfo(course.level);
-  const isEnrolled = progress?.isEnrolled ?? false;
-  const completedLessons = progress?.completedLessons ?? [];
-  const isLocked = course.level > user.level;
+  const levelInfo = LEVELS.find((l) => l.level === course.level);
+  const isEnrolled = progress?.is_enrolled ?? false;
+  const isLocked = course.level > profile.level;
 
   const getNextLesson = () => {
-    // Find first incomplete lesson
     const nextIncomplete = course.lessons.find(l => !completedLessons.includes(l.id));
     return nextIncomplete || course.lessons[0];
   };
 
-  const handleEnroll = () => {
-    enrollCourse(courseId);
-  };
-
   const nextLesson = getNextLesson();
-  const progressPercent = course.lessonsCount > 0
-    ? (completedLessons.length / course.lessonsCount) * 100
+  const progressPercent = course.lessons_count > 0
+    ? (completedLessons.length / course.lessons_count) * 100
     : 0;
 
   return (
@@ -94,7 +198,7 @@ export default function CourseDetailPage({
             <div className="flex items-center gap-2 flex-wrap">
               <Badge variant="secondary">{levelInfo?.displayName}</Badge>
               <span className="text-sm text-muted-foreground">
-                {course.lessonsCount} 課 · {formatDuration(course.totalDuration)}
+                {course.lessons_count} 課 · {formatDuration(course.total_duration)}
               </span>
             </div>
           </div>
@@ -107,8 +211,8 @@ export default function CourseDetailPage({
               需達到{levelInfo?.displayName}
             </Button>
           ) : !isEnrolled ? (
-            <Button size="lg" onClick={handleEnroll}>
-              加入課程
+            <Button size="lg" onClick={handleEnroll} disabled={enrolling}>
+              {enrolling ? '加入中...' : '加入課程'}
             </Button>
           ) : nextLesson ? (
             <Link href={`/club/courses/${course.id}/lessons/${nextLesson.id}`}>
@@ -138,19 +242,19 @@ export default function CourseDetailPage({
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-medium">課程進度</span>
               <span className="text-sm text-muted-foreground">
-                {completedLessons.length}/{course.lessonsCount} 課完成
+                {completedLessons.length}/{course.lessons_count} 課完成
               </span>
             </div>
             <div className="h-3 bg-muted rounded-full overflow-hidden">
               <div
                 className={cn(
                   "h-full transition-all",
-                  progress?.isCompleted ? "bg-green-500" : "bg-primary"
+                  progress?.is_completed ? "bg-green-500" : "bg-primary"
                 )}
                 style={{ width: `${progressPercent}%` }}
               />
             </div>
-            {progress?.isCompleted && (
+            {progress?.is_completed && (
               <p className="text-sm text-green-600 mt-2 flex items-center gap-1">
                 <CheckIcon className="w-4 h-4" />
                 課程已完成
@@ -183,7 +287,7 @@ export default function CourseDetailPage({
         <CardContent className="space-y-2">
           {course.lessons.map((lesson, index) => {
             const isCompleted = completedLessons.includes(lesson.id);
-            const isCurrentLesson = progress?.currentLessonId === lesson.id;
+            const isCurrentLesson = progress?.current_lesson_id === lesson.id;
             const canAccess = isEnrolled && !isLocked;
 
             return (
@@ -196,8 +300,8 @@ export default function CourseDetailPage({
                     <LessonItem
                       index={index}
                       title={lesson.title}
-                      description={lesson.description}
-                      duration={lesson.videoDuration}
+                      description={lesson.description || undefined}
+                      duration={lesson.video_duration}
                       isCompleted={isCompleted}
                       isCurrent={isCurrentLesson}
                     />
@@ -206,8 +310,8 @@ export default function CourseDetailPage({
                   <LessonItem
                     index={index}
                     title={lesson.title}
-                    description={lesson.description}
-                    duration={lesson.videoDuration}
+                    description={lesson.description || undefined}
+                    duration={lesson.video_duration}
                     isCompleted={isCompleted}
                     isCurrent={false}
                     isLocked={!isEnrolled || isLocked}
@@ -230,8 +334,8 @@ export default function CourseDetailPage({
                   加入課程後即可開始觀看所有單元
                 </p>
               </div>
-              <Button size="lg" onClick={handleEnroll}>
-                加入課程
+              <Button size="lg" onClick={handleEnroll} disabled={enrolling}>
+                {enrolling ? '加入中...' : '加入課程'}
               </Button>
             </div>
           </CardContent>

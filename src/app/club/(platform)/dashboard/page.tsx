@@ -44,8 +44,27 @@ export default function DashboardPage() {
     );
   }
 
+  // If not authenticated, show loading while redirecting
+  if (!isAuthenticated) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+          <p className="text-muted-foreground">正在跳轉到登入頁面...</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!profile) {
-    return null;
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <p className="text-muted-foreground mb-4">無法載入用戶資料</p>
+          <Button onClick={() => window.location.reload()}>重新整理</Button>
+        </div>
+      </div>
+    );
   }
 
   const levelInfo = LEVELS.find(l => l.level === profile.level);

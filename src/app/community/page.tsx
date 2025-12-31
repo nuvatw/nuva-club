@@ -1,32 +1,33 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils/cn';
-import { MOCK_POSTS, POST_CATEGORIES } from '@/lib/mock/posts';
-import { useUser } from '@/lib/mock/user-context';
-import { useDatabase } from '@/lib/mock/database-context';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+import type { Post, Profile } from '@/types/database';
 
-// Simplified filters
 const FILTERS = {
   all: { label: '全部', emoji: '📋' },
   question: { label: '發問', emoji: '❓' },
-  showcase: { label: '分享', emoji: '🏆' },
+  share: { label: '分享', emoji: '🏆' },
   challenge: { label: '挑戰', emoji: '🎯' },
 } as const;
 
 type FilterType = keyof typeof FILTERS;
 
 const categoryColors: Record<string, string> = {
-  general: 'bg-blue-100 text-blue-700',
   question: 'bg-purple-100 text-purple-700',
-  showcase: 'bg-green-100 text-green-700',
-  resource: 'bg-amber-100 text-amber-700',
+  share: 'bg-green-100 text-green-700',
   challenge: 'bg-orange-100 text-orange-700',
 };
+
+interface PostWithAuthor extends Post {
+  author?: Profile;
+  has_fired?: boolean;
+}
 
 function timeAgo(dateStr: string) {
   const date = new Date(dateStr);
@@ -42,68 +43,147 @@ function timeAgo(dateStr: string) {
 
 export default function CommunityPage() {
   const router = useRouter();
-  const { user } = useUser();
-  const { state, firePost, unfirePost, createPost } = useDatabase();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [posts, setPosts] = useState<PostWithAuthor[]>([]);
+  const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterType>('all');
   const [showNewPost, setShowNewPost] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [newPost, setNewPost] = useState({
     title: '',
     content: '',
-    category: 'showcase' as 'showcase' | 'question' | 'challenge'
+    type: 'share' as 'share' | 'question' | 'challenge'
   });
 
-  // 合併 mock posts 和 database posts，並根據篩選器過濾
-  const allPosts = useMemo(() => {
-    const combined = [...state.posts, ...MOCK_POSTS.filter(mp => !state.posts.some(p => p.id === mp.id))];
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
+    }
+  }, [authLoading, isAuthenticated, router]);
 
-    // Filter based on selected filter
-    const filtered = filter === 'all'
-      ? combined
-      : combined.filter(p => p.category === filter);
+  useEffect(() => {
+    if (!profile) return;
 
-    // 置頂貼文優先，然後按時間排序
-    return filtered.sort((a, b) => {
-      if (a.isPinned && !b.isPinned) return -1;
-      if (!a.isPinned && b.isPinned) return 1;
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    });
-  }, [state.posts, filter]);
+    const fetchPosts = async () => {
+      const supabase = getClient();
 
-  const handleReaction = (postId: string, hasFired: boolean) => {
-    if (!user) return;
+      // Fetch posts with author info
+      const { data: postsData } = await supabase
+        .from('posts')
+        .select(`
+          *,
+          author:profiles!posts_user_id_fkey(id, name, image, level)
+        `)
+        .order('created_at', { ascending: false });
+
+      if (postsData) {
+        // Check which posts the user has fired
+        const { data: firesData } = await supabase
+          .from('post_fires')
+          .select('post_id')
+          .eq('user_id', profile.id);
+
+        const firedPostIds = new Set(firesData?.map(f => f.post_id) || []);
+
+        const postsWithFires = postsData.map(post => ({
+          ...post,
+          has_fired: firedPostIds.has(post.id),
+        }));
+
+        setPosts(postsWithFires);
+      }
+      setLoading(false);
+    };
+
+    fetchPosts();
+  }, [profile]);
+
+  const handleReaction = async (postId: string, hasFired: boolean) => {
+    if (!profile) return;
+
+    const supabase = getClient();
+
     if (hasFired) {
-      unfirePost(postId, user.id);
+      // Remove fire
+      await supabase
+        .from('post_fires')
+        .delete()
+        .eq('post_id', postId)
+        .eq('user_id', profile.id);
+
+      setPosts(prev =>
+        prev.map(p =>
+          p.id === postId
+            ? { ...p, likes_count: p.likes_count - 1, has_fired: false }
+            : p
+        )
+      );
     } else {
-      firePost(postId, user.id);
+      // Add fire
+      await supabase
+        .from('post_fires')
+        .insert({ post_id: postId, user_id: profile.id });
+
+      setPosts(prev =>
+        prev.map(p =>
+          p.id === postId
+            ? { ...p, likes_count: p.likes_count + 1, has_fired: true }
+            : p
+        )
+      );
     }
   };
 
-  const handleCreatePost = () => {
-    if (!newPost.title.trim() || !newPost.content.trim() || !user) return;
+  const handleCreatePost = async () => {
+    if (!newPost.title.trim() || !newPost.content.trim() || !profile) return;
 
-    createPost({
-      id: `post-${Date.now()}`,
-      userId: user.id,
-      userName: user.name,
-      userImage: user.image,
-      userLevel: user.level,
-      title: newPost.title,
-      content: newPost.content,
-      category: newPost.category,
-      fireCount: 0,
-      commentCount: 0,
-      comments: [],
-      createdAt: new Date().toISOString(),
-    });
+    setSubmitting(true);
+    const supabase = getClient();
 
-    setShowNewPost(false);
-    setNewPost({ title: '', content: '', category: 'showcase' });
+    const { data, error } = await supabase
+      .from('posts')
+      .insert({
+        id: crypto.randomUUID(),
+        user_id: profile.id,
+        type: newPost.type,
+        title: newPost.title,
+        content: newPost.content,
+      })
+      .select(`
+        *,
+        author:profiles!posts_user_id_fkey(id, name, image, level)
+      `)
+      .single();
+
+    if (data && !error) {
+      setPosts(prev => [{ ...data, has_fired: false }, ...prev]);
+      setShowNewPost(false);
+      setNewPost({ title: '', content: '', type: 'share' });
+    }
+
+    setSubmitting(false);
   };
 
-  // Post categories for creating new posts
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return null;
+  }
+
+  // Filter posts
+  const filteredPosts = filter === 'all'
+    ? posts
+    : posts.filter(p => p.type === filter);
+
   const postCategories = [
     { key: 'question', label: '發問', emoji: '❓' },
-    { key: 'showcase', label: '分享', emoji: '🏆' },
+    { key: 'share', label: '分享', emoji: '🏆' },
     { key: 'challenge', label: '挑戰', emoji: '🎯' },
   ] as const;
 
@@ -117,7 +197,7 @@ export default function CommunityPage() {
         <Button onClick={() => setShowNewPost(true)}>發表貼文</Button>
       </div>
 
-      {/* Simplified Filter */}
+      {/* Filter */}
       <div className="flex gap-2">
         {Object.entries(FILTERS).map(([key, { label, emoji }]) => (
           <button
@@ -136,7 +216,7 @@ export default function CommunityPage() {
         ))}
       </div>
 
-      {/* 新貼文表單 */}
+      {/* New Post Form */}
       {showNewPost && (
         <Card>
           <CardHeader>
@@ -161,10 +241,10 @@ export default function CommunityPage() {
                 {postCategories.map(({ key, label, emoji }) => (
                   <button
                     key={key}
-                    onClick={() => setNewPost((prev) => ({ ...prev, category: key }))}
+                    onClick={() => setNewPost((prev) => ({ ...prev, type: key }))}
                     className={cn(
                       'inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-sm transition-all',
-                      newPost.category === key
+                      newPost.type === key
                         ? categoryColors[key]
                         : 'bg-muted hover:bg-muted/80'
                     )}
@@ -180,17 +260,17 @@ export default function CommunityPage() {
               </Button>
               <Button
                 onClick={handleCreatePost}
-                disabled={!newPost.title.trim() || !newPost.content.trim()}
+                disabled={!newPost.title.trim() || !newPost.content.trim() || submitting}
               >
-                發表
+                {submitting ? '發表中...' : '發表'}
               </Button>
             </div>
           </CardContent>
         </Card>
       )}
 
-      {/* 貼文列表 */}
-      {allPosts.length === 0 ? (
+      {/* Posts List */}
+      {filteredPosts.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center">
             <p className="text-muted-foreground">還沒有貼文，來發表第一則吧！</p>
@@ -198,98 +278,93 @@ export default function CommunityPage() {
         </Card>
       ) : (
         <div className="space-y-4">
-          {allPosts.map((post) => (
-            <Card
-              key={post.id}
-              className={cn(
-                'hover:shadow-md transition-shadow cursor-pointer',
-                post.isPinned && 'border-primary bg-primary/5'
-              )}
-              onClick={() => router.push(`/community/${post.id}`)}
-            >
-              <CardContent className="pt-6">
-                <div className="flex gap-4">
-                  {/* 用戶頭像 */}
-                  {post.userImage ? (
-                    <img
-                      src={post.userImage}
-                      alt=""
-                      className="w-10 h-10 rounded-full shrink-0 object-cover"
-                    />
-                  ) : (
-                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                      <span className="text-sm font-medium">
-                        {post.userName.charAt(0).toUpperCase()}
-                      </span>
-                    </div>
-                  )}
-
-                  {/* 內容 */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-medium">{post.userName}</span>
-                      <span className="text-xs text-muted-foreground">Lv.{post.userLevel}</span>
-                      <span className="text-sm text-muted-foreground">
-                        {timeAgo(post.createdAt)}
-                      </span>
-                      {post.isPinned && (
-                        <Badge variant="outline" className="text-xs">
-                          📌 置頂
-                        </Badge>
-                      )}
-                    </div>
-
-                    <div className="flex items-start gap-2 mb-2">
-                      <span
-                        className={cn(
-                          'px-2 py-0.5 rounded text-xs font-medium shrink-0',
-                          categoryColors[post.category] || 'bg-gray-100'
-                        )}
-                      >
-                        {POST_CATEGORIES[post.category as keyof typeof POST_CATEGORIES]?.emoji}{' '}
-                        {POST_CATEGORIES[post.category as keyof typeof POST_CATEGORIES]?.label || post.category}
-                      </span>
-                      <h3 className="font-semibold">{post.title}</h3>
-                    </div>
-
-                    <p className="text-sm text-muted-foreground line-clamp-2">{post.content}</p>
-
-                    {/* 媒體預覽 */}
-                    {post.mediaUrl && post.mediaType === 'image' && (
-                      <div className="mt-3 rounded-lg overflow-hidden max-w-xs">
-                        <img
-                          src={post.mediaUrl}
-                          alt=""
-                          className="w-full h-32 object-cover"
-                        />
+          {filteredPosts.map((post) => {
+            const author = post.author as Profile | undefined;
+            return (
+              <Card
+                key={post.id}
+                className="hover:shadow-md transition-shadow cursor-pointer"
+                onClick={() => router.push(`/community/${post.id}`)}
+              >
+                <CardContent className="pt-6">
+                  <div className="flex gap-4">
+                    {/* User Avatar */}
+                    {author?.image ? (
+                      <img
+                        src={author.image}
+                        alt=""
+                        className="w-10 h-10 rounded-full shrink-0 object-cover"
+                      />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                        <span className="text-sm font-medium">
+                          {author?.name?.charAt(0).toUpperCase() || '?'}
+                        </span>
                       </div>
                     )}
 
-                    {/* 互動區 */}
-                    <div className="flex items-center gap-4 mt-3">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleReaction(post.id, post.hasFired || false);
-                        }}
-                        className={cn(
-                          'flex items-center gap-1 px-2 py-1 rounded transition-all',
-                          post.hasFired ? 'bg-orange-100 text-orange-700' : 'hover:bg-muted'
-                        )}
-                      >
-                        <span>🔥</span>
-                        <span className="text-sm font-medium">{post.fireCount}</span>
-                      </button>
-                      <div className="flex items-center gap-1 text-muted-foreground">
-                        <span>💬</span>
-                        <span className="text-sm">{post.commentCount}</span>
+                    {/* Content */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-medium">{author?.name || '匿名用戶'}</span>
+                        <span className="text-xs text-muted-foreground">Lv.{author?.level || 1}</span>
+                        <span className="text-sm text-muted-foreground">
+                          {timeAgo(post.created_at)}
+                        </span>
+                      </div>
+
+                      <div className="flex items-start gap-2 mb-2">
+                        <span
+                          className={cn(
+                            'px-2 py-0.5 rounded text-xs font-medium shrink-0',
+                            categoryColors[post.type] || 'bg-gray-100'
+                          )}
+                        >
+                          {FILTERS[post.type as FilterType]?.emoji || '📋'}{' '}
+                          {FILTERS[post.type as FilterType]?.label || post.type}
+                        </span>
+                        <h3 className="font-semibold">{post.title}</h3>
+                      </div>
+
+                      <p className="text-sm text-muted-foreground line-clamp-2">{post.content}</p>
+
+                      {/* Image Preview */}
+                      {post.image && (
+                        <div className="mt-3 rounded-lg overflow-hidden max-w-xs">
+                          <img
+                            src={post.image}
+                            alt=""
+                            className="w-full h-32 object-cover"
+                          />
+                        </div>
+                      )}
+
+                      {/* Interactions */}
+                      <div className="flex items-center gap-4 mt-3">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleReaction(post.id, post.has_fired || false);
+                          }}
+                          className={cn(
+                            'flex items-center gap-1 px-2 py-1 rounded transition-all',
+                            post.has_fired ? 'bg-orange-100 text-orange-700' : 'hover:bg-muted'
+                          )}
+                        >
+                          <span>🔥</span>
+                          <span className="text-sm font-medium">{post.likes_count}</span>
+                        </button>
+                        <div className="flex items-center gap-1 text-muted-foreground">
+                          <span>💬</span>
+                          <span className="text-sm">{post.comments_count}</span>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
     </div>

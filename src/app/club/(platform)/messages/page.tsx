@@ -1,16 +1,35 @@
 'use client';
 
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils/cn';
-import { useUser } from '@/lib/mock/user-context';
-import {
-  MOCK_CONVERSATIONS,
-  MOCK_IMAGE_OPTIONS,
-  type MockMessage,
-  type MockConversation,
-} from '@/lib/mock/messages';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+
+interface Message {
+  id: string;
+  sender_id: string;
+  receiver_id: string;
+  content: string;
+  is_read: boolean;
+  created_at: string;
+  sender?: {
+    id: string;
+    name: string;
+    image: string | null;
+  };
+}
+
+interface Conversation {
+  partnerId: string;
+  partnerName: string;
+  partnerImage: string | null;
+  lastMessage: string;
+  lastMessageTime: string;
+  unreadCount: number;
+}
 
 function timeAgo(dateStr: string) {
   const date = new Date(dateStr);
@@ -29,186 +48,220 @@ function formatMessageTime(dateStr: string) {
 }
 
 export default function MessagesPage() {
-  const { user } = useUser();
-  const [conversations, setConversations] = useState<MockConversation[]>([]);
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const router = useRouter();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [selectedConversation, setSelectedConversation] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
-  const [showImagePicker, setShowImagePicker] = useState(false);
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [enlargedImage, setEnlargedImage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // 載入對話
   useEffect(() => {
-    if (user) {
-      const userConvs = MOCK_CONVERSATIONS.filter(c =>
-        c.participants.some(p => p.id === user.id)
-      );
-      setConversations(userConvs);
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
     }
-  }, [user]);
+  }, [authLoading, isAuthenticated, router]);
 
-  // 滾動到最新訊息
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [selectedConversationId, conversations]);
+    if (!profile) return;
 
-  // 取得選中的對話
-  const selectedConversation = useMemo(() => {
-    return conversations.find(c => c.id === selectedConversationId);
-  }, [conversations, selectedConversationId]);
+    const fetchConversations = async () => {
+      const supabase = getClient();
 
-  // 取得對話的另一方
-  const getOtherParticipant = (conv: MockConversation) => {
-    return conv.participants.find(p => p.id !== user?.id);
-  };
+      // Get all messages involving this user
+      const { data: allMessages } = await supabase
+        .from('messages')
+        .select(`
+          *,
+          sender:profiles!messages_sender_id_fkey(id, name, image),
+          receiver:profiles!messages_receiver_id_fkey(id, name, image)
+        `)
+        .or(`sender_id.eq.${profile.id},receiver_id.eq.${profile.id}`)
+        .order('created_at', { ascending: false });
 
-  // 發送訊息
-  const handleSend = () => {
-    if ((!newMessage.trim() && !selectedImage) || !selectedConversationId || !user) return;
+      if (allMessages) {
+        // Group by conversation partner
+        const convMap = new Map<string, Conversation>();
 
-    const newMsg: MockMessage = {
-      id: `msg-${Date.now()}`,
-      senderId: user.id,
-      content: newMessage.trim(),
-      mediaUrl: selectedImage || undefined,
-      mediaType: selectedImage ? 'image' : undefined,
-      createdAt: new Date().toISOString(),
-      isRead: false,
+        allMessages.forEach((msg: any) => {
+          const isReceived = msg.receiver_id === profile.id;
+          const partnerId = isReceived ? msg.sender_id : msg.receiver_id;
+          const partner = isReceived ? msg.sender : msg.receiver;
+
+          if (!convMap.has(partnerId)) {
+            convMap.set(partnerId, {
+              partnerId,
+              partnerName: partner?.name || 'Unknown',
+              partnerImage: partner?.image,
+              lastMessage: msg.content,
+              lastMessageTime: msg.created_at,
+              unreadCount: isReceived && !msg.is_read ? 1 : 0,
+            });
+          } else if (isReceived && !msg.is_read) {
+            const conv = convMap.get(partnerId)!;
+            conv.unreadCount++;
+          }
+        });
+
+        setConversations(Array.from(convMap.values()));
+      }
+      setLoading(false);
     };
 
-    setConversations(prev =>
-      prev.map(c =>
-        c.id === selectedConversationId
-          ? {
-              ...c,
-              messages: [...c.messages, newMsg],
-              updatedAt: newMsg.createdAt,
-            }
-          : c
-      )
-    );
+    fetchConversations();
+  }, [profile]);
 
-    setNewMessage('');
-    setSelectedImage(null);
-    setShowImagePicker(false);
+  useEffect(() => {
+    if (!profile || !selectedConversation) return;
+
+    const fetchMessages = async () => {
+      const supabase = getClient();
+
+      const { data } = await supabase
+        .from('messages')
+        .select(`
+          *,
+          sender:profiles!messages_sender_id_fkey(id, name, image)
+        `)
+        .or(`and(sender_id.eq.${profile.id},receiver_id.eq.${selectedConversation}),and(sender_id.eq.${selectedConversation},receiver_id.eq.${profile.id})`)
+        .order('created_at', { ascending: true });
+
+      if (data) {
+        setMessages(data);
+
+        // Mark as read
+        await supabase
+          .from('messages')
+          .update({ is_read: true })
+          .eq('receiver_id', profile.id)
+          .eq('sender_id', selectedConversation);
+      }
+    };
+
+    fetchMessages();
+  }, [profile, selectedConversation]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const handleSendMessage = async () => {
+    if (!newMessage.trim() || !selectedConversation || !profile) return;
+
+    const supabase = getClient();
+
+    const { data } = await supabase
+      .from('messages')
+      .insert({
+        sender_id: profile.id,
+        receiver_id: selectedConversation,
+        content: newMessage.trim(),
+        is_read: false,
+      })
+      .select(`
+        *,
+        sender:profiles!messages_sender_id_fkey(id, name, image)
+      `)
+      .single();
+
+    if (data) {
+      setMessages(prev => [...prev, data]);
+      setNewMessage('');
+    }
   };
 
-  // 選擇對話
-  const handleSelectConversation = (convId: string) => {
-    setSelectedConversationId(convId);
-    // 標記為已讀
-    setConversations(prev =>
-      prev.map(c =>
-        c.id === convId
-          ? {
-              ...c,
-              unreadCount: 0,
-              messages: c.messages.map(m => ({ ...m, isRead: true })),
-            }
-          : c
-      )
-    );
-  };
-
-  if (!user) {
+  if (authLoading || loading) {
     return (
-      <div className="flex items-center justify-center h-[calc(100vh-8rem)]">
-        <p className="text-muted-foreground">請先登入</p>
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
 
+  if (!profile) {
+    return null;
+  }
+
+  const selectedPartner = conversations.find(c => c.partnerId === selectedConversation);
+
   return (
-    <div className="flex h-[calc(100vh-8rem)] gap-4">
-      {/* 對話列表側邊欄 */}
-      <Card className="w-80 flex-shrink-0 overflow-hidden">
-        <CardHeader className="py-4 border-b">
-          <CardTitle className="text-lg">訊息</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0 overflow-y-auto h-[calc(100%-4rem)]">
-          {conversations.length === 0 ? (
-            <p className="p-4 text-sm text-muted-foreground text-center">
-              還沒有對話
-            </p>
-          ) : (
-            <div className="divide-y">
-              {conversations
-                .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-                .map((conv) => {
-                  const other = getOtherParticipant(conv);
-                  const lastMsg = conv.messages[conv.messages.length - 1];
-                  const lastPreview = lastMsg?.mediaUrl
-                    ? '📷 圖片'
-                    : lastMsg?.content?.slice(0, 30) || '開始對話...';
+    <div className="max-w-5xl mx-auto">
+      <h1 className="text-2xl font-bold mb-6">訊息</h1>
 
-                  return (
-                    <button
-                      key={conv.id}
-                      className={cn(
-                        'w-full p-4 flex items-start gap-3 text-left hover:bg-muted/50 transition-colors',
-                        selectedConversationId === conv.id && 'bg-muted'
-                      )}
-                      onClick={() => handleSelectConversation(conv.id)}
-                    >
-                      <img
-                        src={other?.image}
-                        alt=""
-                        className="w-10 h-10 rounded-full flex-shrink-0 object-cover"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium truncate">{other?.name}</span>
-                          <span className="text-xs text-muted-foreground">
-                            {timeAgo(conv.updatedAt)}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm text-muted-foreground truncate flex-1">
-                            {lastPreview}
-                          </p>
-                          {conv.unreadCount > 0 && (
-                            <span className="w-5 h-5 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center">
-                              {conv.unreadCount}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <div className="grid md:grid-cols-3 gap-4 h-[600px]">
+        {/* Conversation List */}
+        <Card className="md:col-span-1 overflow-hidden">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">對話列表</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0 overflow-y-auto" style={{ maxHeight: '520px' }}>
+            {conversations.length === 0 ? (
+              <p className="text-center py-8 text-muted-foreground text-sm">沒有對話</p>
+            ) : (
+              conversations.map((conv) => (
+                <button
+                  key={conv.partnerId}
+                  onClick={() => setSelectedConversation(conv.partnerId)}
+                  className={cn(
+                    'w-full flex items-center gap-3 p-3 text-left hover:bg-muted/50 transition-colors border-b',
+                    selectedConversation === conv.partnerId && 'bg-primary/5'
+                  )}
+                >
+                  {conv.partnerImage ? (
+                    <img
+                      src={conv.partnerImage}
+                      alt=""
+                      className="w-10 h-10 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                      <span className="font-medium">{conv.partnerName.charAt(0)}</span>
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex justify-between items-center">
+                      <span className="font-medium text-sm">{conv.partnerName}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {timeAgo(conv.lastMessageTime)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground truncate">{conv.lastMessage}</p>
+                  </div>
+                  {conv.unreadCount > 0 && (
+                    <span className="w-5 h-5 bg-primary text-white text-xs rounded-full flex items-center justify-center">
+                      {conv.unreadCount}
+                    </span>
+                  )}
+                </button>
+              ))
+            )}
+          </CardContent>
+        </Card>
 
-      {/* 訊息區域 */}
-      <Card className="flex-1 flex flex-col overflow-hidden">
-        {!selectedConversation ? (
-          <div className="flex-1 flex items-center justify-center text-muted-foreground">
-            選擇一個對話開始聊天
-          </div>
-        ) : (
-          <>
-            {/* 標題列 */}
-            <CardHeader className="py-3 border-b flex-shrink-0">
-              <div className="flex items-center gap-3">
-                <img
-                  src={getOtherParticipant(selectedConversation)?.image}
-                  alt=""
-                  className="w-10 h-10 rounded-full object-cover"
-                />
-                <CardTitle className="text-lg">
-                  {getOtherParticipant(selectedConversation)?.name}
-                </CardTitle>
-              </div>
-            </CardHeader>
-
-            {/* 訊息列表 */}
-            <CardContent className="flex-1 overflow-y-auto p-4">
-              <div className="space-y-4">
-                {selectedConversation.messages.map((msg) => {
-                  const isOwn = msg.senderId === user.id;
+        {/* Chat Window */}
+        <Card className="md:col-span-2 flex flex-col overflow-hidden">
+          {selectedConversation && selectedPartner ? (
+            <>
+              <CardHeader className="pb-2 border-b">
+                <div className="flex items-center gap-3">
+                  {selectedPartner.partnerImage ? (
+                    <img
+                      src={selectedPartner.partnerImage}
+                      alt=""
+                      className="w-10 h-10 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                      <span className="font-medium">{selectedPartner.partnerName.charAt(0)}</span>
+                    </div>
+                  )}
+                  <CardTitle className="text-base">{selectedPartner.partnerName}</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent className="flex-1 overflow-y-auto p-4 space-y-3" style={{ maxHeight: '420px' }}>
+                {messages.map((msg) => {
+                  const isOwn = msg.sender_id === profile.id;
                   return (
                     <div
                       key={msg.id}
@@ -216,165 +269,52 @@ export default function MessagesPage() {
                     >
                       <div
                         className={cn(
-                          'max-w-[70%] rounded-2xl',
-                          isOwn ? 'bg-primary text-primary-foreground' : 'bg-muted'
+                          'max-w-[70%] rounded-2xl px-4 py-2',
+                          isOwn
+                            ? 'bg-primary text-white rounded-br-sm'
+                            : 'bg-muted rounded-bl-sm'
                         )}
                       >
-                        {/* 圖片訊息 */}
-                        {msg.mediaUrl && msg.mediaType === 'image' && (
-                          <div
-                            className="cursor-pointer"
-                            onClick={() => setEnlargedImage(msg.mediaUrl!)}
-                          >
-                            <img
-                              src={msg.mediaUrl}
-                              alt=""
-                              className="rounded-t-2xl w-full max-w-xs object-cover"
-                            />
-                          </div>
-                        )}
-                        {/* 文字內容 */}
-                        {msg.content && (
-                          <div className={cn('p-3', msg.mediaUrl && 'pt-2')}>
-                            <p className="whitespace-pre-wrap break-words">{msg.content}</p>
-                          </div>
-                        )}
-                        {/* 時間 */}
-                        <div
-                          className={cn(
-                            'text-xs px-3 pb-2',
-                            isOwn ? 'text-primary-foreground/70' : 'text-muted-foreground'
-                          )}
-                        >
-                          {formatMessageTime(msg.createdAt)}
-                          {isOwn && (
-                            <span className="ml-2">{msg.isRead ? '✓✓' : '✓'}</span>
-                          )}
-                        </div>
+                        <p className="text-sm">{msg.content}</p>
+                        <p className={cn(
+                          'text-[10px] mt-1',
+                          isOwn ? 'text-white/70' : 'text-muted-foreground'
+                        )}>
+                          {formatMessageTime(msg.created_at)}
+                        </p>
                       </div>
                     </div>
                   );
                 })}
                 <div ref={messagesEndRef} />
-              </div>
-            </CardContent>
-
-            {/* 圖片選擇器 */}
-            {showImagePicker && (
-              <div className="border-t p-3 bg-muted/30">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium">選擇圖片</span>
-                  <button
-                    onClick={() => {
-                      setShowImagePicker(false);
-                      setSelectedImage(null);
-                    }}
-                    className="text-sm text-muted-foreground hover:text-foreground"
-                  >
-                    取消
-                  </button>
-                </div>
-                <div className="grid grid-cols-6 gap-2">
-                  {MOCK_IMAGE_OPTIONS.map((img) => (
-                    <button
-                      key={img.id}
-                      onClick={() => setSelectedImage(img.url)}
-                      className={cn(
-                        'aspect-square rounded-lg overflow-hidden border-2 transition-all',
-                        selectedImage === img.url
-                          ? 'border-primary ring-2 ring-primary/20'
-                          : 'border-transparent hover:border-muted-foreground/30'
-                      )}
-                    >
-                      <img
-                        src={img.url}
-                        alt={img.label}
-                        className="w-full h-full object-cover"
-                      />
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* 已選圖片預覽 */}
-            {selectedImage && !showImagePicker && (
-              <div className="border-t p-3 bg-muted/30">
-                <div className="flex items-center gap-2">
-                  <img
-                    src={selectedImage}
-                    alt=""
-                    className="w-16 h-16 rounded-lg object-cover"
+              </CardContent>
+              <div className="p-4 border-t">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                    placeholder="輸入訊息..."
+                    className="flex-1 px-4 py-2 border rounded-full focus:outline-none focus:ring-2 focus:ring-primary"
                   />
-                  <button
-                    onClick={() => setSelectedImage(null)}
-                    className="text-sm text-red-500 hover:underline"
+                  <Button
+                    onClick={handleSendMessage}
+                    disabled={!newMessage.trim()}
+                    className="rounded-full"
                   >
-                    移除
-                  </button>
+                    送出
+                  </Button>
                 </div>
               </div>
-            )}
-
-            {/* 輸入區 */}
-            <div className="p-4 border-t flex-shrink-0">
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setShowImagePicker(!showImagePicker)}
-                  className={cn(
-                    'p-3 rounded-lg border transition-colors',
-                    showImagePicker ? 'bg-primary text-white' : 'hover:bg-muted'
-                  )}
-                  title="上傳圖片"
-                >
-                  📷
-                </button>
-                <input
-                  type="text"
-                  className="flex-1 p-3 rounded-lg border bg-background"
-                  placeholder="輸入訊息..."
-                  value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSend();
-                    }
-                  }}
-                />
-                <Button
-                  onClick={handleSend}
-                  disabled={!newMessage.trim() && !selectedImage}
-                >
-                  發送
-                </Button>
-              </div>
+            </>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-muted-foreground">
+              選擇一個對話開始聊天
             </div>
-          </>
-        )}
-      </Card>
-
-      {/* 圖片放大查看 */}
-      {enlargedImage && (
-        <div
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
-          onClick={() => setEnlargedImage(null)}
-        >
-          <div className="relative max-w-4xl max-h-[90vh]">
-            <img
-              src={enlargedImage}
-              alt=""
-              className="max-w-full max-h-[90vh] object-contain rounded-lg"
-            />
-            <button
-              onClick={() => setEnlargedImage(null)}
-              className="absolute top-4 right-4 w-10 h-10 bg-white/20 hover:bg-white/30 rounded-full flex items-center justify-center text-white text-xl"
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-      )}
+          )}
+        </Card>
+      </div>
     </div>
   );
 }

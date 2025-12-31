@@ -1,12 +1,29 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { MOCK_USERS, LEVELS } from '@/lib/mock';
 import { cn } from '@/lib/utils/cn';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+import type { Profile } from '@/types/database';
+
+const LEVELS = [
+  { level: 1, displayName: 'Lv.1' },
+  { level: 2, displayName: 'Lv.2' },
+  { level: 3, displayName: 'Lv.3' },
+  { level: 4, displayName: 'Lv.4' },
+  { level: 5, displayName: 'Lv.5' },
+  { level: 6, displayName: 'Lv.6' },
+  { level: 7, displayName: 'Lv.7' },
+  { level: 8, displayName: 'Lv.8' },
+  { level: 9, displayName: 'Lv.9' },
+  { level: 10, displayName: 'Lv.10' },
+  { level: 11, displayName: 'Lv.11' },
+  { level: 12, displayName: 'Lv.12' },
+];
 
 function getLevelName(level: number) {
   return LEVELS.find((l) => l.level === level)?.displayName || `第 ${level} 級`;
@@ -17,46 +34,95 @@ type StatusFilter = 'all' | 'active' | 'trial' | 'canceled';
 
 export default function UsersPage() {
   const router = useRouter();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [users, setUsers] = useState<Profile[]>([]);
+  const [loading, setLoading] = useState(true);
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
+    }
+  }, [authLoading, isAuthenticated, router]);
+
+  useEffect(() => {
+    if (!authLoading && profile && profile.role !== 'guardian') {
+      router.push('/club/dashboard');
+    }
+  }, [authLoading, profile, router]);
+
+  useEffect(() => {
+    if (!profile) return;
+
+    const fetchUsers = async () => {
+      const supabase = getClient();
+      const { data } = await supabase
+        .from('profiles')
+        .select('*')
+        .order('level', { ascending: false });
+
+      if (data) {
+        setUsers(data);
+      }
+      setLoading(false);
+    };
+
+    fetchUsers();
+  }, [profile]);
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return null;
+  }
+
   // Filter users
-  let users = [...MOCK_USERS];
+  let filteredUsers = [...users];
 
   if (searchQuery) {
     const query = searchQuery.toLowerCase();
-    users = users.filter(u =>
+    filteredUsers = filteredUsers.filter(u =>
       u.name.toLowerCase().includes(query) ||
       u.email.toLowerCase().includes(query)
     );
   }
 
   if (roleFilter !== 'all') {
-    users = users.filter(u => u.role === roleFilter);
+    filteredUsers = filteredUsers.filter(u => u.role === roleFilter);
   }
 
   if (statusFilter !== 'all') {
-    users = users.filter(u => u.subscriptionStatus === statusFilter);
+    filteredUsers = filteredUsers.filter(u => u.subscription_status === statusFilter);
   }
 
-  // Sort by level descending
-  users = users.sort((a, b) => b.level - a.level);
+  // Stats
+  const totalUsers = users.length;
+  const activeUsers = users.filter(u => u.subscription_status === 'active').length;
+  const trialUsers = users.filter(u => u.subscription_status === 'trial').length;
+  const coachCount = users.filter(u => u.role === 'nunu').length;
 
-  const roleLabels = {
+  const roleLabels: Record<string, string> = {
     vava: '法法',
     nunu: '努努',
     guardian: '守護者',
   };
 
-  const statusLabels = {
+  const statusLabels: Record<string, string> = {
     active: '活躍',
     trial: '試用',
     canceled: '已取消',
     expired: '已過期',
   };
 
-  const statusColors = {
+  const statusColors: Record<string, string> = {
     active: 'bg-green-100 text-green-700',
     trial: 'bg-blue-100 text-blue-700',
     canceled: 'bg-red-100 text-red-700',
@@ -79,31 +145,25 @@ export default function UsersPage() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card>
           <CardContent className="pt-4 pb-4 text-center">
-            <p className="text-3xl font-bold">{MOCK_USERS.length}</p>
+            <p className="text-3xl font-bold">{totalUsers}</p>
             <p className="text-sm text-muted-foreground">總用戶</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-4 pb-4 text-center">
-            <p className="text-3xl font-bold text-green-600">
-              {MOCK_USERS.filter(u => u.subscriptionStatus === 'active').length}
-            </p>
+            <p className="text-3xl font-bold text-green-600">{activeUsers}</p>
             <p className="text-sm text-muted-foreground">活躍用戶</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-4 pb-4 text-center">
-            <p className="text-3xl font-bold text-blue-600">
-              {MOCK_USERS.filter(u => u.subscriptionStatus === 'trial').length}
-            </p>
+            <p className="text-3xl font-bold text-blue-600">{trialUsers}</p>
             <p className="text-sm text-muted-foreground">試用中</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-4 pb-4 text-center">
-            <p className="text-3xl font-bold text-purple-600">
-              {MOCK_USERS.filter(u => u.availableRoles.includes('nunu')).length}
-            </p>
+            <p className="text-3xl font-bold text-purple-600">{coachCount}</p>
             <p className="text-sm text-muted-foreground">教練數</p>
           </CardContent>
         </Card>
@@ -165,10 +225,10 @@ export default function UsersPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">用戶列表</CardTitle>
-          <CardDescription>共 {users.length} 位用戶</CardDescription>
+          <CardDescription>共 {filteredUsers.length} 位用戶</CardDescription>
         </CardHeader>
         <CardContent>
-          {users.length === 0 ? (
+          {filteredUsers.length === 0 ? (
             <p className="text-center py-8 text-muted-foreground">
               找不到符合條件的用戶
             </p>
@@ -186,7 +246,7 @@ export default function UsersPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {users.map(user => (
+                  {filteredUsers.map(user => (
                     <tr key={user.id} className="hover:bg-muted/50">
                       <td className="py-3">
                         <div className="flex items-center gap-3">
@@ -211,34 +271,29 @@ export default function UsersPage() {
                         <Badge variant="secondary">{getLevelName(user.level)}</Badge>
                       </td>
                       <td className="py-3">
-                        <div className="flex gap-1">
-                          {user.availableRoles.map(role => (
-                            <Badge
-                              key={role}
-                              variant="outline"
-                              className={cn(
-                                'text-xs',
-                                role === 'guardian' && 'bg-purple-50 text-purple-700',
-                                role === 'nunu' && 'bg-blue-50 text-blue-700'
-                              )}
-                            >
-                              {roleLabels[role]}
-                            </Badge>
-                          ))}
-                        </div>
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            'text-xs',
+                            user.role === 'guardian' && 'bg-purple-50 text-purple-700',
+                            user.role === 'nunu' && 'bg-blue-50 text-blue-700'
+                          )}
+                        >
+                          {roleLabels[user.role] || user.role}
+                        </Badge>
                       </td>
                       <td className="py-3">
                         <span className="text-sm">
-                          {user.planType === 'club' ? '俱樂部' : '基礎'}
+                          {user.plan_type === 'club' ? '俱樂部' : '基礎'}
                         </span>
                       </td>
                       <td className="py-3">
-                        <Badge className={cn('text-xs', statusColors[user.subscriptionStatus])}>
-                          {statusLabels[user.subscriptionStatus]}
+                        <Badge className={cn('text-xs', statusColors[user.subscription_status] || '')}>
+                          {statusLabels[user.subscription_status] || user.subscription_status}
                         </Badge>
                       </td>
                       <td className="py-3 text-sm text-muted-foreground">
-                        {user.cohortMonth}
+                        {user.cohort_month}
                       </td>
                     </tr>
                   ))}

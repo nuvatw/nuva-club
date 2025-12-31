@@ -1,49 +1,130 @@
 'use client';
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils/cn';
-import { useUser, useDatabase, LEVELS } from '@/lib/mock';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+import type { Course } from '@/types/database';
+
+const LEVELS = [
+  { level: 1, displayName: 'Lv.1', stageName: '入門' },
+  { level: 2, displayName: 'Lv.2', stageName: '入門' },
+  { level: 3, displayName: 'Lv.3', stageName: '入門' },
+  { level: 4, displayName: 'Lv.4', stageName: '進階' },
+  { level: 5, displayName: 'Lv.5', stageName: '進階' },
+  { level: 6, displayName: 'Lv.6', stageName: '進階' },
+  { level: 7, displayName: 'Lv.7', stageName: '高階' },
+  { level: 8, displayName: 'Lv.8', stageName: '高階' },
+  { level: 9, displayName: 'Lv.9', stageName: '高階' },
+  { level: 10, displayName: 'Lv.10', stageName: '專家' },
+  { level: 11, displayName: 'Lv.11', stageName: '專家' },
+  { level: 12, displayName: 'Lv.12', stageName: '大師' },
+];
+
+interface CourseWithProgress extends Course {
+  completedLessons: number;
+  isEnrolled: boolean;
+  isCompleted: boolean;
+}
 
 export default function CoursesPage() {
   const router = useRouter();
-  const { user, isLoggedIn } = useUser();
-  const { state, getCourseProgress } = useDatabase();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [inProgressCourses, setInProgressCourses] = useState<CourseWithProgress[]>([]);
+  const [recommendedCourses, setRecommendedCourses] = useState<Course[]>([]);
+  const [nextLevelCourses, setNextLevelCourses] = useState<Course[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!isLoggedIn) {
+    if (!authLoading && !isAuthenticated) {
       router.push('/club/login');
     }
-  }, [isLoggedIn, router]);
+  }, [authLoading, isAuthenticated, router]);
 
-  // Get courses the user is currently taking (enrolled but not completed)
-  const inProgressCourses = useMemo(() => {
-    return state.courses.filter(course => {
-      const progress = getCourseProgress(course.id);
-      return progress?.isEnrolled && !progress?.isCompleted;
-    });
-  }, [state.courses, getCourseProgress]);
+  useEffect(() => {
+    if (!profile) return;
 
-  // Get recommended courses (same level as user, not enrolled)
-  const recommendedCourses = useMemo(() => {
-    if (!user) return [];
-    return state.courses.filter(course => {
-      const progress = getCourseProgress(course.id);
-      // Same level as user and not enrolled
-      return course.level === user.level && !progress?.isEnrolled;
-    }).slice(0, 6); // Limit to 6 recommendations
-  }, [state.courses, getCourseProgress, user]);
+    const fetchCourses = async () => {
+      const supabase = getClient();
 
-  // Get courses for next level (preview)
-  const nextLevelCourses = useMemo(() => {
-    if (!user || user.level >= 12) return [];
-    return state.courses.filter(course => course.level === user.level + 1).slice(0, 3);
-  }, [state.courses, user]);
+      // Get in-progress courses
+      const { data: progressData } = await supabase
+        .from('user_course_progress')
+        .select(`
+          *,
+          course:courses(*)
+        `)
+        .eq('user_id', profile.id)
+        .eq('is_enrolled', true)
+        .eq('is_completed', false);
 
-  if (!user) {
+      if (progressData) {
+        const inProgress = await Promise.all(progressData.map(async (p: any) => {
+          const { count } = await supabase
+            .from('user_lesson_progress')
+            .select('*', { count: 'exact', head: true })
+            .eq('user_id', profile.id)
+            .eq('course_id', p.course_id)
+            .eq('is_completed', true);
+
+          return {
+            ...p.course,
+            completedLessons: count || 0,
+            isEnrolled: true,
+            isCompleted: false,
+          };
+        }));
+        setInProgressCourses(inProgress);
+      }
+
+      // Get recommended courses (same level, not enrolled)
+      const { data: enrolled } = await supabase
+        .from('user_course_progress')
+        .select('course_id')
+        .eq('user_id', profile.id)
+        .eq('is_enrolled', true);
+
+      const enrolledIds = enrolled?.map(e => e.course_id) || [];
+
+      const { data: recommended } = await supabase
+        .from('courses')
+        .select('*')
+        .eq('level', profile.level)
+        .not('id', 'in', `(${enrolledIds.length > 0 ? enrolledIds.join(',') : 'null'})`)
+        .limit(6);
+
+      setRecommendedCourses(recommended || []);
+
+      // Get next level courses
+      if (profile.level < 12) {
+        const { data: nextLevel } = await supabase
+          .from('courses')
+          .select('*')
+          .eq('level', profile.level + 1)
+          .limit(3);
+
+        setNextLevelCourses(nextLevel || []);
+      }
+
+      setLoading(false);
+    };
+
+    fetchCourses();
+  }, [profile]);
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
     return null;
   }
 
@@ -57,7 +138,7 @@ export default function CoursesPage() {
       <div>
         <h1 className="text-2xl font-bold">我的課程</h1>
         <p className="text-muted-foreground">
-          目前等級：<Badge variant="secondary">{getLevelInfo(user.level)?.displayName}</Badge>
+          目前等級：<Badge variant="secondary">{getLevelInfo(profile.level)?.displayName}</Badge>
         </p>
       </div>
 
@@ -79,10 +160,8 @@ export default function CoursesPage() {
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
             {inProgressCourses.map((course) => {
-              const progress = getCourseProgress(course.id);
-              const completedLessons = progress?.completedLessons ?? [];
-              const progressPercent = course.lessonsCount > 0
-                ? (completedLessons.length / course.lessonsCount) * 100
+              const progressPercent = course.lessons_count > 0
+                ? (course.completedLessons / course.lessons_count) * 100
                 : 0;
               const levelInfo = getLevelInfo(course.level);
 
@@ -111,7 +190,7 @@ export default function CoursesPage() {
                           </Badge>
                         </div>
                         <p className="text-xs text-muted-foreground mb-3">
-                          {course.lessonsCount} 課 · {course.totalDuration} 分鐘
+                          {course.lessons_count} 課 · {course.total_duration} 分鐘
                         </p>
 
                         {/* Progress */}
@@ -119,7 +198,7 @@ export default function CoursesPage() {
                           <div className="flex justify-between text-xs">
                             <span className="text-muted-foreground">進度</span>
                             <span className="font-medium text-primary">
-                              {completedLessons.length}/{course.lessonsCount} 課
+                              {course.completedLessons}/{course.lessons_count} 課
                             </span>
                           </div>
                           <div className="h-2 bg-muted rounded-full overflow-hidden">
@@ -145,7 +224,7 @@ export default function CoursesPage() {
           <div className="flex items-center gap-2 mb-4">
             <SparklesIcon className="w-5 h-5 text-amber-500" />
             <h2 className="text-lg font-semibold">推薦課程</h2>
-            <Badge variant="secondary">{getLevelInfo(user.level)?.displayName}</Badge>
+            <Badge variant="secondary">{getLevelInfo(profile.level)?.displayName}</Badge>
           </div>
 
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -170,8 +249,8 @@ export default function CoursesPage() {
                   </CardHeader>
                   <CardContent className="pt-0">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span>{course.lessonsCount} 課</span>
-                      <span>{course.totalDuration} 分鐘</span>
+                      <span>{course.lessons_count} 課</span>
+                      <span>{course.total_duration} 分鐘</span>
                     </div>
                   </CardContent>
                 </Card>
@@ -187,7 +266,7 @@ export default function CoursesPage() {
           <div className="flex items-center gap-2 mb-4">
             <LockIcon className="w-5 h-5 text-muted-foreground" />
             <h2 className="text-lg font-semibold text-muted-foreground">下一級課程預覽</h2>
-            <Badge variant="outline">{getLevelInfo(user.level + 1)?.displayName}</Badge>
+            <Badge variant="outline">{getLevelInfo(profile.level + 1)?.displayName}</Badge>
           </div>
 
           <div className="grid gap-4 md:grid-cols-3">

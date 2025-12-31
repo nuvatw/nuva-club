@@ -1,32 +1,97 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { MOCK_COURSES, LEVELS } from '@/lib/mock';
 import { cn } from '@/lib/utils/cn';
-import type { LevelNumber } from '@/types';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+import type { Course } from '@/types/database';
+
+const LEVELS = [
+  { level: 1, displayName: 'Lv.1', stageName: '入門' },
+  { level: 2, displayName: 'Lv.2', stageName: '入門' },
+  { level: 3, displayName: 'Lv.3', stageName: '入門' },
+  { level: 4, displayName: 'Lv.4', stageName: '進階' },
+  { level: 5, displayName: 'Lv.5', stageName: '進階' },
+  { level: 6, displayName: 'Lv.6', stageName: '進階' },
+  { level: 7, displayName: 'Lv.7', stageName: '高階' },
+  { level: 8, displayName: 'Lv.8', stageName: '高階' },
+  { level: 9, displayName: 'Lv.9', stageName: '高階' },
+  { level: 10, displayName: 'Lv.10', stageName: '大師' },
+  { level: 11, displayName: 'Lv.11', stageName: '大師' },
+  { level: 12, displayName: 'Lv.12', stageName: '大師' },
+];
+
+type LevelNumber = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
 
 export default function CoursesManagementPage() {
   const router = useRouter();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selectedLevel, setSelectedLevel] = useState<LevelNumber | 'all'>('all');
 
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
+    }
+  }, [authLoading, isAuthenticated, router]);
+
+  useEffect(() => {
+    if (!authLoading && profile && profile.role !== 'guardian') {
+      router.push('/club/dashboard');
+    }
+  }, [authLoading, profile, router]);
+
+  useEffect(() => {
+    if (!profile) return;
+
+    const fetchCourses = async () => {
+      const supabase = getClient();
+      const { data } = await supabase
+        .from('courses')
+        .select('*')
+        .order('level')
+        .order('title');
+
+      if (data) {
+        setCourses(data);
+      }
+      setLoading(false);
+    };
+
+    fetchCourses();
+  }, [profile]);
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return null;
+  }
+
   // Filter courses
-  let courses = [...MOCK_COURSES];
+  let filteredCourses = [...courses];
   if (selectedLevel !== 'all') {
-    courses = courses.filter(c => c.level === selectedLevel);
+    filteredCourses = filteredCourses.filter(c => c.level === selectedLevel);
   }
 
   // Group by level for stats
-  const coursesByLevel = MOCK_COURSES.reduce((acc, course) => {
+  const coursesByLevel = courses.reduce((acc, course) => {
     acc[course.level] = (acc[course.level] || 0) + 1;
     return acc;
   }, {} as Record<number, number>);
 
-  const totalLessons = MOCK_COURSES.reduce((sum, c) => sum + c.lessonsCount, 0);
-  const totalDuration = MOCK_COURSES.reduce((sum, c) => sum + c.totalDuration, 0);
+  const totalLessons = courses.reduce((sum, c) => sum + c.lessons_count, 0);
+  const totalDuration = courses.reduce((sum, c) => sum + c.total_duration, 0);
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
@@ -47,7 +112,7 @@ export default function CoursesManagementPage() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card>
           <CardContent className="pt-4 pb-4 text-center">
-            <p className="text-3xl font-bold">{MOCK_COURSES.length}</p>
+            <p className="text-3xl font-bold">{courses.length}</p>
             <p className="text-sm text-muted-foreground">總課程數</p>
           </CardContent>
         </Card>
@@ -105,12 +170,12 @@ export default function CoursesManagementPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">課程列表</CardTitle>
-          <CardDescription>共 {courses.length} 個課程</CardDescription>
+          <CardDescription>共 {filteredCourses.length} 個課程</CardDescription>
         </CardHeader>
         <CardContent>
-          {courses.length === 0 ? (
+          {filteredCourses.length === 0 ? (
             <p className="text-center py-8 text-muted-foreground">
-              此等級沒有課程
+              {selectedLevel === 'all' ? '目前沒有課程' : '此等級沒有課程'}
             </p>
           ) : (
             <div className="overflow-x-auto">
@@ -125,7 +190,7 @@ export default function CoursesManagementPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {courses.map(course => {
+                  {filteredCourses.map(course => {
                     const levelInfo = LEVELS.find(l => l.level === course.level);
                     return (
                       <tr key={course.id} className="hover:bg-muted/50">
@@ -143,10 +208,10 @@ export default function CoursesManagementPage() {
                           </Badge>
                         </td>
                         <td className="py-3">
-                          <span className="text-sm">{course.lessonsCount} 課</span>
+                          <span className="text-sm">{course.lessons_count} 課</span>
                         </td>
                         <td className="py-3">
-                          <span className="text-sm">{course.totalDuration} 分鐘</span>
+                          <span className="text-sm">{course.total_duration} 分鐘</span>
                         </td>
                         <td className="py-3">
                           <div className="flex gap-2">

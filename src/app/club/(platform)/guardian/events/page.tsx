@@ -1,217 +1,188 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { MOCK_EVENTS } from '@/lib/mock';
-import { useSimulatedTime } from '@/lib/mock/simulated-time-context';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
 import { cn } from '@/lib/utils/cn';
+import type { Event } from '@/types/database';
 
 type TypeFilter = 'all' | 'online' | 'offline';
 type StatusFilter = 'all' | 'upcoming' | 'ongoing' | 'past';
 
+interface EventWithStatus extends Event {
+  status: 'upcoming' | 'ongoing' | 'past';
+}
+
 export default function EventsManagementPage() {
   const router = useRouter();
-  const { currentDate } = useSimulatedTime();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [events, setEvents] = useState<EventWithStatus[]>([]);
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [loading, setLoading] = useState(true);
 
-  const getEventStatus = (event: typeof MOCK_EVENTS[0]) => {
-    const start = new Date(event.startDate);
-    const end = new Date(event.endDate);
-    if (currentDate < start) return 'upcoming';
-    if (currentDate > end) return 'past';
-    return 'ongoing';
-  };
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
+    }
+  }, [authLoading, isAuthenticated, router]);
 
-  // Filter events
-  let events = [...MOCK_EVENTS];
+  useEffect(() => {
+    if (!authLoading && profile && profile.role !== 'guardian') {
+      router.push('/club/dashboard');
+    }
+  }, [authLoading, profile, router]);
 
+  useEffect(() => {
+    if (!profile) return;
+
+    const fetchEvents = async () => {
+      const supabase = getClient();
+      const now = new Date();
+
+      const { data } = await supabase
+        .from('events')
+        .select('*')
+        .order('start_date', { ascending: false });
+
+      if (data) {
+        const withStatus = data.map((e: Event) => {
+          const start = new Date(e.start_date);
+          const end = new Date(e.end_date);
+          let status: 'upcoming' | 'ongoing' | 'past' = 'upcoming';
+          if (now < start) status = 'upcoming';
+          else if (now > end) status = 'past';
+          else status = 'ongoing';
+          return { ...e, status };
+        });
+        setEvents(withStatus);
+      }
+      setLoading(false);
+    };
+
+    fetchEvents();
+  }, [profile]);
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return null;
+  }
+
+  // Apply filters
+  let filteredEvents = [...events];
   if (typeFilter !== 'all') {
-    events = events.filter(e => e.type === typeFilter);
+    filteredEvents = filteredEvents.filter(e => e.type === typeFilter);
   }
-
   if (statusFilter !== 'all') {
-    events = events.filter(e => getEventStatus(e) === statusFilter);
+    filteredEvents = filteredEvents.filter(e => e.status === statusFilter);
   }
 
-  // Sort by start date
-  events = events.sort((a, b) =>
-    new Date(a.startDate).getTime() - new Date(b.startDate).getTime()
-  );
-
-  // Take first 20
-  events = events.slice(0, 20);
-
-  const upcomingCount = MOCK_EVENTS.filter(e => getEventStatus(e) === 'upcoming').length;
-  const onlineCount = MOCK_EVENTS.filter(e => e.type === 'online').length;
-  const offlineCount = MOCK_EVENTS.filter(e => e.type === 'offline').length;
-
-  const statusLabels = {
-    upcoming: '即將開始',
-    ongoing: '進行中',
-    past: '已結束',
+  const statusConfig = {
+    upcoming: { label: '即將舉行', color: 'bg-blue-100 text-blue-700' },
+    ongoing: { label: '進行中', color: 'bg-green-100 text-green-700' },
+    past: { label: '已結束', color: 'bg-gray-100 text-gray-600' },
   };
 
-  const statusColors = {
-    upcoming: 'bg-blue-100 text-blue-700',
-    ongoing: 'bg-green-100 text-green-700',
-    past: 'bg-gray-100 text-gray-700',
+  const typeConfig = {
+    online: { label: '線上', color: 'bg-purple-100 text-purple-700' },
+    offline: { label: '實體', color: 'bg-orange-100 text-orange-700' },
   };
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto">
+    <div className="space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">活動管理</h1>
-          <p className="text-muted-foreground">建立和管理線上與實體活動</p>
+          <p className="text-muted-foreground">管理平台活動</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => router.push('/club/guardian/dashboard')}>
-            返回主頁
-          </Button>
-          <Button>新增活動</Button>
-        </div>
-      </div>
-
-      {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card>
-          <CardContent className="pt-4 pb-4 text-center">
-            <p className="text-3xl font-bold">{MOCK_EVENTS.length}</p>
-            <p className="text-sm text-muted-foreground">總活動數</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4 pb-4 text-center">
-            <p className="text-3xl font-bold text-blue-600">{upcomingCount}</p>
-            <p className="text-sm text-muted-foreground">即將舉行</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4 pb-4 text-center">
-            <p className="text-3xl font-bold">{onlineCount}</p>
-            <p className="text-sm text-muted-foreground">線上活動</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4 pb-4 text-center">
-            <p className="text-3xl font-bold">{offlineCount}</p>
-            <p className="text-sm text-muted-foreground">實體活動</p>
-          </CardContent>
-        </Card>
+        <Button>新增活動</Button>
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-4">
+      <div className="flex gap-4 flex-wrap">
         <div className="flex gap-2">
-          {[
-            { key: 'all', label: '全部類型' },
-            { key: 'online', label: '線上' },
-            { key: 'offline', label: '實體' },
-          ].map(({ key, label }) => (
-            <button
-              key={key}
-              onClick={() => setTypeFilter(key as TypeFilter)}
-              className={cn(
-                'px-4 py-2 rounded-lg text-sm font-medium transition-all',
-                typeFilter === key
-                  ? 'bg-primary text-white'
-                  : 'bg-muted hover:bg-muted/80'
-              )}
+          <span className="text-sm text-muted-foreground self-center">類型:</span>
+          {(['all', 'online', 'offline'] as TypeFilter[]).map((t) => (
+            <Button
+              key={t}
+              variant={typeFilter === t ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setTypeFilter(t)}
             >
-              {label}
-            </button>
+              {t === 'all' ? '全部' : typeConfig[t].label}
+            </Button>
           ))}
         </div>
         <div className="flex gap-2">
-          {[
-            { key: 'all', label: '全部狀態' },
-            { key: 'upcoming', label: '即將開始' },
-            { key: 'past', label: '已結束' },
-          ].map(({ key, label }) => (
-            <button
-              key={key}
-              onClick={() => setStatusFilter(key as StatusFilter)}
-              className={cn(
-                'px-3 py-2 rounded-lg text-sm transition-all border',
-                statusFilter === key
-                  ? 'bg-foreground text-background'
-                  : 'bg-background hover:bg-muted'
-              )}
+          <span className="text-sm text-muted-foreground self-center">狀態:</span>
+          {(['all', 'upcoming', 'ongoing', 'past'] as StatusFilter[]).map((s) => (
+            <Button
+              key={s}
+              variant={statusFilter === s ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setStatusFilter(s)}
             >
-              {label}
-            </button>
+              {s === 'all' ? '全部' : statusConfig[s].label}
+            </Button>
           ))}
         </div>
       </div>
 
       {/* Events List */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">活動列表</CardTitle>
-          <CardDescription>顯示 {events.length} 個活動</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {events.length === 0 ? (
-            <p className="text-center py-8 text-muted-foreground">
-              沒有符合條件的活動
-            </p>
-          ) : (
-            <div className="space-y-3">
-              {events.map(event => {
-                const status = getEventStatus(event);
-                return (
-                  <div
-                    key={event.id}
-                    className={cn(
-                      'p-4 rounded-lg border flex items-center gap-4',
-                      status === 'ongoing' && 'border-green-300 bg-green-50'
-                    )}
-                  >
-                    <div className="text-center w-14">
-                      <p className="text-2xl font-bold">
-                        {new Date(event.startDate).getDate()}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {new Date(event.startDate).toLocaleDateString('zh-TW', { month: 'short' })}
-                      </p>
-                    </div>
-
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <h3 className="font-medium truncate">{event.title}</h3>
-                        <Badge variant={event.type === 'online' ? 'default' : 'secondary'}>
-                          {event.type === 'online' ? '線上' : '實體'}
-                        </Badge>
-                        <Badge className={cn('text-xs', statusColors[status])}>
-                          {statusLabels[status]}
-                        </Badge>
-                      </div>
-                      <p className="text-sm text-muted-foreground">
-                        {new Date(event.startDate).toLocaleTimeString('zh-TW', {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                        {event.location && ` · ${event.location}`}
-                      </p>
-                    </div>
-
-                    <div className="text-right shrink-0">
-                      <p className="text-sm font-medium">{event.rsvpCount} 人</p>
-                      <p className="text-xs text-muted-foreground">已報名</p>
-                    </div>
-
-                    <Button variant="outline" size="sm">編輯</Button>
+      <div className="space-y-4">
+        {filteredEvents.length === 0 ? (
+          <Card>
+            <CardContent className="py-12 text-center">
+              <p className="text-muted-foreground">沒有符合條件的活動</p>
+            </CardContent>
+          </Card>
+        ) : (
+          filteredEvents.map((event) => (
+            <Card key={event.id} className="hover:shadow-md transition-shadow">
+              <CardHeader className="pb-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-lg">{event.title}</CardTitle>
+                    <CardDescription>
+                      {new Date(event.start_date).toLocaleDateString('zh-TW')} - {new Date(event.end_date).toLocaleDateString('zh-TW')}
+                    </CardDescription>
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                  <div className="flex gap-2">
+                    <Badge className={cn('text-xs', typeConfig[event.type as 'online' | 'offline']?.color)}>
+                      {typeConfig[event.type as 'online' | 'offline']?.label || event.type}
+                    </Badge>
+                    <Badge className={cn('text-xs', statusConfig[event.status].color)}>
+                      {statusConfig[event.status].label}
+                    </Badge>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-muted-foreground mb-3">{event.description}</p>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">
+                    地點: {event.location || '線上'}
+                  </span>
+                  <span className="text-muted-foreground">
+                    報名: {event.rsvp_count || 0} 人
+                  </span>
+                </div>
+              </CardContent>
+            </Card>
+          ))
+        )}
+      </div>
     </div>
   );
 }

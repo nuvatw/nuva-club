@@ -2,9 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useRole, useUser } from '@/lib/mock';
+import { useAuthContext } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils/cn';
-import type { UserRole } from '@/types';
 
 interface NavItem {
   href: string;
@@ -45,7 +44,7 @@ const guardianNavItems: NavItem[] = [
   { href: '/club/guardian/applications', label: '申請審核', icon: <ClipboardIcon /> },
 ];
 
-function getNavItemsForRole(role: UserRole): NavItem[] {
+function getNavItemsForRole(role: string): NavItem[] {
   switch (role) {
     case 'guardian':
       return guardianNavItems;
@@ -58,9 +57,22 @@ function getNavItemsForRole(role: UserRole): NavItem[] {
 
 export function Sidebar({ className }: SidebarProps) {
   const pathname = usePathname();
-  const { role } = useRole();
-  const { nunuApplicationStatus } = useUser();
+  const { profile, loading } = useAuthContext();
+
+  const role = profile?.role || 'vava';
   const navItems = getNavItemsForRole(role);
+
+  if (loading) {
+    return (
+      <aside className={cn('flex h-[calc(100vh-4rem)] w-64 flex-col border-r bg-white', className)}>
+        <nav className="flex-1 space-y-1 p-4">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="h-10 rounded-xl bg-muted animate-pulse" />
+          ))}
+        </nav>
+      </aside>
+    );
+  }
 
   return (
     <aside
@@ -89,7 +101,7 @@ export function Sidebar({ className }: SidebarProps) {
           );
         })}
 
-        {role === 'vava' && nunuApplicationStatus !== 'approved' && (
+        {role === 'vava' && profile?.nunu_application_status !== 'approved' && (
           <div className="pt-4 mt-4 border-t">
             <Link
               href="/club/apply-nunu"
@@ -101,7 +113,7 @@ export function Sidebar({ className }: SidebarProps) {
               )}
             >
               <span className="h-5 w-5"><GraduationCapIcon /></span>
-              {nunuApplicationStatus === 'pending' ? '申請進度' : '成為教練'}
+              {profile?.nunu_application_status === 'pending' ? '申請進度' : '成為教練'}
             </Link>
           </div>
         )}
@@ -178,14 +190,6 @@ function ForumIcon() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5">
       <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 8.511c.884.284 1.5 1.128 1.5 2.097v4.286c0 1.136-.847 2.1-1.98 2.193-.34.027-.68.052-1.02.072v3.091l-3-3c-1.354 0-2.694-.055-4.02-.163a2.115 2.115 0 0 1-.825-.242m9.345-8.334a2.126 2.126 0 0 0-.476-.095 48.64 48.64 0 0 0-8.048 0c-1.131.094-1.976 1.057-1.976 2.192v4.286c0 .837.46 1.58 1.155 1.951m9.345-8.334V6.637c0-1.621-1.152-3.026-2.76-3.235A48.455 48.455 0 0 0 11.25 3c-2.115 0-4.198.137-6.24.402-1.608.209-2.76 1.614-2.76 3.235v6.226c0 1.621 1.152 3.026 2.76 3.235.577.075 1.157.14 1.74.194V21l4.155-4.155" />
-    </svg>
-  );
-}
-
-function StarIcon() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M11.48 3.499a.562.562 0 0 1 1.04 0l2.125 5.111a.563.563 0 0 0 .475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 0 0-.182.557l1.285 5.385a.562.562 0 0 1-.84.61l-4.725-2.885a.562.562 0 0 0-.586 0L6.982 20.54a.562.562 0 0 1-.84-.61l1.285-5.386a.562.562 0 0 0-.182-.557l-4.204-3.602a.562.562 0 0 1 .321-.988l5.518-.442a.563.563 0 0 0 .475-.345L11.48 3.5Z" />
     </svg>
   );
 }

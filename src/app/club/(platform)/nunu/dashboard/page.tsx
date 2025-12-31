@@ -1,24 +1,120 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { useUser, MOCK_COACH_STUDENTS, LEVELS, MOCK_FEEDBACK } from '@/lib/mock';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
 import { cn } from '@/lib/utils/cn';
+
+const LEVELS = [
+  { level: 1, displayName: 'Lv.1' },
+  { level: 2, displayName: 'Lv.2' },
+  { level: 3, displayName: 'Lv.3' },
+  { level: 4, displayName: 'Lv.4' },
+  { level: 5, displayName: 'Lv.5' },
+  { level: 6, displayName: 'Lv.6' },
+  { level: 7, displayName: 'Lv.7' },
+  { level: 8, displayName: 'Lv.8' },
+  { level: 9, displayName: 'Lv.9' },
+  { level: 10, displayName: 'Lv.10' },
+  { level: 11, displayName: 'Lv.11' },
+  { level: 12, displayName: 'Lv.12' },
+];
 
 function getLevelName(level: number) {
   return LEVELS.find((l) => l.level === level)?.displayName || `第 ${level} 級`;
 }
 
+interface Student {
+  id: string;
+  name: string;
+  image: string | null;
+  level: number;
+  cohort_month: string;
+  subscription_status: string;
+  plan_type: string;
+  feedback_count: number;
+  assigned_at: string;
+}
+
 export default function NunuDashboardPage() {
-  const { user } = useUser();
-  const students = MOCK_COACH_STUDENTS;
+  const router = useRouter();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [students, setStudents] = useState<Student[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
+    }
+  }, [authLoading, isAuthenticated, router]);
+
+  useEffect(() => {
+    if (!authLoading && profile && profile.role !== 'nunu') {
+      router.push('/club/dashboard');
+    }
+  }, [authLoading, profile, router]);
+
+  useEffect(() => {
+    if (!profile) return;
+
+    const fetchStudents = async () => {
+      const supabase = getClient();
+
+      const { data } = await supabase
+        .from('coach_students')
+        .select(`
+          student_id,
+          feedback_count,
+          assigned_at,
+          student:profiles!coach_students_student_id_fkey(
+            id,
+            name,
+            image,
+            level,
+            cohort_month,
+            subscription_status,
+            plan_type
+          )
+        `)
+        .eq('coach_id', profile.id);
+
+      if (data) {
+        const studentList = data.map((item: any) => ({
+          id: item.student.id,
+          name: item.student.name,
+          image: item.student.image,
+          level: item.student.level,
+          cohort_month: item.student.cohort_month,
+          subscription_status: item.student.subscription_status,
+          plan_type: item.student.plan_type,
+          feedback_count: item.feedback_count,
+          assigned_at: item.assigned_at,
+        }));
+        setStudents(studentList);
+      }
+      setLoading(false);
+    };
+
+    fetchStudents();
+  }, [profile]);
 
   // Count students who haven't received feedback recently
-  const pendingFeedbackCount = students.filter(s => s.feedbackCount === 0).length;
+  const pendingFeedbackCount = students.filter(s => s.feedback_count === 0).length;
 
-  if (!user) {
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
     return null;
   }
 
@@ -41,7 +137,7 @@ export default function NunuDashboardPage() {
           <CardHeader className="pb-2">
             <CardDescription>累計回饋</CardDescription>
             <CardTitle className="text-3xl">
-              {students.reduce((sum, s) => sum + s.feedbackCount, 0)}
+              {students.reduce((sum, s) => sum + s.feedback_count, 0)}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -77,7 +173,7 @@ export default function NunuDashboardPage() {
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {students.filter(s => s.feedbackCount === 0).slice(0, 3).map((student) => (
+              {students.filter(s => s.feedback_count === 0).slice(0, 3).map((student) => (
                 <Link
                   key={student.id}
                   href={`/club/nunu/vavas/${student.id}`}
@@ -94,7 +190,7 @@ export default function NunuDashboardPage() {
                     <div className="flex-1 min-w-0">
                       <p className="font-medium">{student.name}</p>
                       <p className="text-sm text-muted-foreground">
-                        {getLevelName(student.level)} · {student.cohortMonth} 加入
+                        {getLevelName(student.level)} · {student.cohort_month} 加入
                       </p>
                     </div>
                     <Button size="sm">給予回饋</Button>
@@ -125,9 +221,6 @@ export default function NunuDashboardPage() {
           ) : (
             <div className="divide-y">
               {students.slice(0, 5).map((student) => {
-                const unreadCount = MOCK_FEEDBACK.filter(
-                  f => f.studentId === student.id && !f.isRead
-                ).length;
                 return (
                   <Link
                     key={student.id}
@@ -153,19 +246,19 @@ export default function NunuDashboardPage() {
                         <div className="flex items-center gap-2">
                           <h3 className="font-medium">{student.name}</h3>
                           <Badge variant="secondary">{getLevelName(student.level)}</Badge>
-                          {student.subscriptionStatus === 'trial' && (
+                          {student.subscription_status === 'trial' && (
                             <Badge variant="outline" className="text-xs">試用中</Badge>
                           )}
                         </div>
                         <p className="text-sm text-muted-foreground">
-                          {student.cohortMonth} 加入 · {student.planType === 'club' ? '俱樂部' : '基礎'}方案
+                          {student.cohort_month} 加入 · {student.plan_type === 'club' ? '俱樂部' : '基礎'}方案
                         </p>
                       </div>
 
                       <div className="text-right">
-                        <p className="text-sm font-medium">{student.feedbackCount} 次回饋</p>
+                        <p className="text-sm font-medium">{student.feedback_count} 次回饋</p>
                         <p className="text-xs text-muted-foreground">
-                          配對於 {new Date(student.assignedAt).toLocaleDateString('zh-TW')}
+                          配對於 {new Date(student.assigned_at).toLocaleDateString('zh-TW')}
                         </p>
                       </div>
                     </div>

@@ -1,13 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils/cn';
-import { useUser } from '@/lib/mock/user-context';
-import type { PlanType, BillingCycle } from '@/types';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+
+type PlanType = 'basic' | 'club';
+type BillingCycle = 'monthly' | 'yearly';
 
 const PLANS = {
   basic: {
@@ -28,302 +31,239 @@ const PLANS = {
     nameChinese: '俱樂部方案',
     description: '完整體驗，含教練指導與挑戰',
     features: [
-      '基礎方案所有功能',
-      '每月挑戰活動（含獎品）',
-      '個人教練回饋',
-      '論壇發文與互動',
-      '實體活動參與權',
-      '優先客服支援',
+      'Basic 所有功能',
+      '1 對 1 教練指導',
+      '月度挑戰參與',
+      '社群論壇（完整功能）',
+      '線上活動優先報名',
+      '專屬會員徽章',
     ],
-    monthlyPrice: 999,
-    yearlyPrice: 9990,
-    recommended: true,
+    monthlyPrice: 599,
+    yearlyPrice: 5990,
   },
-};
-
-const STATUS_LABELS = {
-  trial: { label: '試用中', color: 'bg-blue-100 text-blue-700' },
-  active: { label: '使用中', color: 'bg-green-100 text-green-700' },
-  canceled: { label: '已取消', color: 'bg-red-100 text-red-700' },
-  expired: { label: '已過期', color: 'bg-gray-100 text-gray-700' },
 };
 
 export default function SubscriptionPage() {
   const router = useRouter();
-  const {
-    user,
-    isLoggedIn,
-    subscription,
-    changePlan,
-    changeBillingCycle,
-    cancelSubscription,
-    reactivateSubscription,
-  } = useUser();
+  const { profile, loading: authLoading, isAuthenticated, refreshProfile } = useAuth();
+  const [selectedPlan, setSelectedPlan] = useState<PlanType | null>(null);
+  const [billingCycle, setBillingCycle] = useState<BillingCycle>('monthly');
+  const [updating, setUpdating] = useState(false);
 
-  const [showConfirmCancel, setShowConfirmCancel] = useState(false);
-  const [showPlanChange, setShowPlanChange] = useState(false);
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
+    }
+  }, [authLoading, isAuthenticated, router]);
 
-  if (!isLoggedIn || !user || !subscription) {
+  useEffect(() => {
+    if (profile) {
+      setSelectedPlan(profile.plan_type as PlanType || 'basic');
+      setBillingCycle(profile.billing_cycle as BillingCycle || 'monthly');
+    }
+  }, [profile]);
+
+  if (authLoading) {
     return (
-      <div className="max-w-3xl mx-auto space-y-6">
-        <Card>
-          <CardContent className="py-12 text-center">
-            <p className="text-muted-foreground mb-4">請先登入以查看訂閱資訊</p>
-            <Button onClick={() => router.push('/club/login')}>登入</Button>
-          </CardContent>
-        </Card>
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
 
-  const currentPlan = PLANS[subscription.planType];
-  const otherPlan = subscription.planType === 'basic' ? 'club' : 'basic';
-  const statusInfo = STATUS_LABELS[subscription.status];
-  const price = subscription.billingCycle === 'monthly'
-    ? currentPlan.monthlyPrice
-    : currentPlan.yearlyPrice;
+  if (!profile) {
+    return null;
+  }
 
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleDateString('zh-TW', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
+  const currentPlan = profile.plan_type as PlanType || 'basic';
+  const isTrialing = profile.subscription_status === 'trial';
+  const isActive = profile.subscription_status === 'active';
+  const isCancelled = profile.subscription_status === 'canceled';
+
+  const handleChangePlan = async (plan: PlanType) => {
+    setUpdating(true);
+    const supabase = getClient();
+
+    await supabase
+      .from('profiles')
+      .update({
+        plan_type: plan,
+        billing_cycle: billingCycle,
+        subscription_status: 'active',
+      })
+      .eq('id', profile.id);
+
+    await refreshProfile();
+    setUpdating(false);
   };
 
-  const handleChangePlan = (newPlan: PlanType) => {
-    changePlan(newPlan);
-    setShowPlanChange(false);
+  const handleChangeBillingCycle = async (cycle: BillingCycle) => {
+    setBillingCycle(cycle);
+    if (isActive) {
+      setUpdating(true);
+      const supabase = getClient();
+
+      await supabase
+        .from('profiles')
+        .update({ billing_cycle: cycle })
+        .eq('id', profile.id);
+
+      await refreshProfile();
+      setUpdating(false);
+    }
   };
 
-  const handleToggleBillingCycle = () => {
-    const newCycle: BillingCycle = subscription.billingCycle === 'monthly' ? 'yearly' : 'monthly';
-    changeBillingCycle(newCycle);
+  const handleCancelSubscription = async () => {
+    if (!confirm('確定要取消訂閱嗎？')) return;
+
+    setUpdating(true);
+    const supabase = getClient();
+
+    await supabase
+      .from('profiles')
+      .update({ subscription_status: 'canceled' })
+      .eq('id', profile.id);
+
+    await refreshProfile();
+    setUpdating(false);
   };
 
-  const handleCancelSubscription = () => {
-    cancelSubscription();
-    setShowConfirmCancel(false);
+  const handleReactivate = async () => {
+    setUpdating(true);
+    const supabase = getClient();
+
+    await supabase
+      .from('profiles')
+      .update({ subscription_status: 'active' })
+      .eq('id', profile.id);
+
+    await refreshProfile();
+    setUpdating(false);
   };
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
+    <div className="space-y-8 max-w-4xl mx-auto">
       <div>
         <h1 className="text-2xl font-bold">訂閱管理</h1>
-        <p className="text-muted-foreground">管理你的方案與帳單設定</p>
+        <p className="text-muted-foreground">管理你的訂閱方案</p>
       </div>
 
-      {/* Current Plan Card */}
+      {/* Current Status */}
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-xl">{currentPlan.nameChinese}</CardTitle>
-              <CardDescription>{currentPlan.description}</CardDescription>
-            </div>
-            <Badge className={cn('text-sm', statusInfo.color)}>
-              {statusInfo.label}
-            </Badge>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          {/* Price */}
-          <div className="flex items-baseline gap-2">
-            <span className="text-4xl font-bold">NT${price}</span>
-            <span className="text-muted-foreground">
-              /{subscription.billingCycle === 'monthly' ? '月' : '年'}
-            </span>
-          </div>
-
-          {/* Features */}
-          <div>
-            <p className="text-sm font-medium mb-2">方案內容：</p>
-            <ul className="space-y-1.5">
-              {currentPlan.features.map((feature, i) => (
-                <li key={i} className="flex items-center gap-2 text-sm">
-                  <CheckIcon className="h-4 w-4 text-green-500 shrink-0" />
-                  {feature}
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          {/* Billing Info */}
-          <div className="pt-4 border-t space-y-2">
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">訂閱開始日期</span>
-              <span>{formatDate(subscription.startDate)}</span>
-            </div>
-            {subscription.status !== 'canceled' && (
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">下次扣款日期</span>
-                <span>{formatDate(subscription.nextBillingDate)}</span>
-              </div>
-            )}
-            {subscription.cancelDate && (
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">取消日期</span>
-                <span className="text-red-600">{formatDate(subscription.cancelDate)}</span>
-              </div>
-            )}
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">帳單週期</span>
-              <span>{subscription.billingCycle === 'monthly' ? '每月' : '每年'}</span>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Actions */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">管理訂閱</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Change Plan */}
-          {!showPlanChange ? (
-            <div className="flex items-center justify-between p-4 bg-muted/30 rounded-lg">
-              <div>
-                <p className="font-medium">變更方案</p>
-                <p className="text-sm text-muted-foreground">
-                  切換到 {PLANS[otherPlan].nameChinese}
-                </p>
-              </div>
-              <Button variant="outline" onClick={() => setShowPlanChange(true)}>
-                變更
-              </Button>
-            </div>
-          ) : (
-            <div className="p-4 bg-muted/30 rounded-lg space-y-4">
-              <p className="font-medium">選擇新方案</p>
-              <div className="grid gap-3">
-                {(Object.entries(PLANS) as [PlanType, typeof PLANS.basic][]).map(([key, plan]) => (
-                  <button
-                    key={key}
-                    onClick={() => handleChangePlan(key)}
-                    className={cn(
-                      'p-4 rounded-lg border text-left transition-all',
-                      subscription.planType === key
-                        ? 'border-primary bg-primary/5'
-                        : 'hover:border-primary/50'
-                    )}
-                  >
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="font-medium">{plan.nameChinese}</span>
-                      {subscription.planType === key && (
-                        <Badge variant="outline" className="text-xs">目前方案</Badge>
-                      )}
-                      {'recommended' in plan && (plan as { recommended?: boolean }).recommended && (
-                        <Badge>推薦</Badge>
-                      )}
-                    </div>
-                    <p className="text-sm text-muted-foreground">{plan.description}</p>
-                    <p className="text-sm font-medium mt-2">
-                      NT${subscription.billingCycle === 'monthly' ? plan.monthlyPrice : plan.yearlyPrice}
-                      /{subscription.billingCycle === 'monthly' ? '月' : '年'}
-                    </p>
-                  </button>
-                ))}
-              </div>
-              <Button variant="ghost" onClick={() => setShowPlanChange(false)}>
-                取消
-              </Button>
-            </div>
-          )}
-
-          {/* Toggle Billing Cycle */}
-          <div className="flex items-center justify-between p-4 bg-muted/30 rounded-lg">
-            <div>
-              <p className="font-medium">帳單週期</p>
-              <p className="text-sm text-muted-foreground">
-                {subscription.billingCycle === 'monthly'
-                  ? '切換到年繳可省 17%'
-                  : '目前為年繳方案'}
-              </p>
-            </div>
-            <Button variant="outline" onClick={handleToggleBillingCycle}>
-              切換到{subscription.billingCycle === 'monthly' ? '年繳' : '月繳'}
-            </Button>
-          </div>
-
-          {/* Cancel / Reactivate */}
-          {subscription.status === 'canceled' ? (
-            <div className="flex items-center justify-between p-4 bg-green-50 rounded-lg border border-green-200">
-              <div>
-                <p className="font-medium text-green-700">重新訂閱</p>
-                <p className="text-sm text-green-600">恢復你的訂閱以繼續學習</p>
-              </div>
-              <Button onClick={reactivateSubscription}>
-                重新訂閱
-              </Button>
-            </div>
-          ) : !showConfirmCancel ? (
-            <div className="flex items-center justify-between p-4 bg-muted/30 rounded-lg">
-              <div>
-                <p className="font-medium">取消訂閱</p>
-                <p className="text-sm text-muted-foreground">你可以隨時重新訂閱</p>
-              </div>
-              <Button variant="outline" onClick={() => setShowConfirmCancel(true)}>
-                取消訂閱
-              </Button>
-            </div>
-          ) : (
-            <div className="p-4 bg-red-50 rounded-lg border border-red-200 space-y-3">
-              <p className="font-medium text-red-700">確定要取消訂閱嗎？</p>
-              <p className="text-sm text-red-600">
-                取消後，你將在目前帳單週期結束前仍可使用所有功能。
-              </p>
-              <div className="flex gap-2">
-                <Button variant="destructive" onClick={handleCancelSubscription}>
-                  確定取消
-                </Button>
-                <Button variant="ghost" onClick={() => setShowConfirmCancel(false)}>
-                  返回
-                </Button>
-              </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Payment History */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">付款紀錄</CardTitle>
+          <CardTitle className="text-lg">目前狀態</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="space-y-3">
-            {/* Mock payment history */}
-            {[
-              { date: subscription.startDate, amount: price, status: 'paid' },
-            ].map((payment, i) => (
-              <div key={i} className="flex items-center justify-between p-3 bg-muted/30 rounded-lg">
-                <div>
-                  <p className="font-medium">NT${payment.amount}</p>
-                  <p className="text-sm text-muted-foreground">{formatDate(payment.date)}</p>
-                </div>
-                <Badge variant="outline" className="bg-green-50 text-green-700">
-                  已付款
-                </Badge>
-              </div>
-            ))}
+          <div className="flex items-center gap-4">
+            <div>
+              <p className="text-2xl font-bold">{PLANS[currentPlan].nameChinese}</p>
+              <p className="text-sm text-muted-foreground">
+                {profile.billing_cycle === 'yearly' ? '年繳' : '月繳'}
+              </p>
+            </div>
+            <Badge className={cn(
+              isActive ? 'bg-green-100 text-green-700' :
+              isTrialing ? 'bg-blue-100 text-blue-700' :
+              'bg-gray-100 text-gray-700'
+            )}>
+              {isActive ? '啟用中' : isTrialing ? '試用中' : isCancelled ? '已取消' : '待啟用'}
+            </Badge>
           </div>
+          {isCancelled && (
+            <div className="mt-4">
+              <Button onClick={handleReactivate} disabled={updating}>
+                {updating ? '處理中...' : '重新啟用訂閱'}
+              </Button>
+            </div>
+          )}
+          {(isActive || isTrialing) && (
+            <div className="mt-4">
+              <Button variant="outline" onClick={handleCancelSubscription} disabled={updating}>
+                {updating ? '處理中...' : '取消訂閱'}
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      {/* Billing Cycle Toggle */}
+      <div className="flex justify-center gap-2">
+        <Button
+          variant={billingCycle === 'monthly' ? 'default' : 'outline'}
+          onClick={() => handleChangeBillingCycle('monthly')}
+          disabled={updating}
+        >
+          月繳
+        </Button>
+        <Button
+          variant={billingCycle === 'yearly' ? 'default' : 'outline'}
+          onClick={() => handleChangeBillingCycle('yearly')}
+          disabled={updating}
+        >
+          年繳（省 2 個月）
+        </Button>
+      </div>
+
+      {/* Plans */}
+      <div className="grid md:grid-cols-2 gap-6">
+        {(Object.entries(PLANS) as [PlanType, typeof PLANS.basic][]).map(([key, plan]) => {
+          const isCurrentPlan = currentPlan === key;
+          const price = billingCycle === 'yearly' ? plan.yearlyPrice : plan.monthlyPrice;
+
+          return (
+            <Card
+              key={key}
+              className={cn(
+                'relative',
+                isCurrentPlan && 'border-primary border-2',
+                key === 'club' && 'bg-primary/5'
+              )}
+            >
+              {isCurrentPlan && (
+                <Badge className="absolute -top-3 right-4 bg-primary">目前方案</Badge>
+              )}
+              {key === 'club' && !isCurrentPlan && (
+                <Badge className="absolute -top-3 right-4 bg-orange-500">推薦</Badge>
+              )}
+              <CardHeader>
+                <CardTitle>{plan.nameChinese}</CardTitle>
+                <CardDescription>{plan.description}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div>
+                  <span className="text-3xl font-bold">NT${price}</span>
+                  <span className="text-muted-foreground">
+                    /{billingCycle === 'yearly' ? '年' : '月'}
+                  </span>
+                </div>
+                <ul className="space-y-2">
+                  {plan.features.map((feature, i) => (
+                    <li key={i} className="flex items-center gap-2 text-sm">
+                      <CheckIcon className="w-4 h-4 text-green-600" />
+                      {feature}
+                    </li>
+                  ))}
+                </ul>
+                <Button
+                  className="w-full"
+                  variant={isCurrentPlan ? 'secondary' : 'default'}
+                  disabled={isCurrentPlan || updating}
+                  onClick={() => handleChangePlan(key)}
+                >
+                  {isCurrentPlan ? '目前方案' : updating ? '處理中...' : '切換到此方案'}
+                </Button>
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
 function CheckIcon({ className }: { className?: string }) {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      fill="none"
-      viewBox="0 0 24 24"
-      strokeWidth={2}
-      stroke="currentColor"
-      className={className}
-    >
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={className}>
       <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
     </svg>
   );

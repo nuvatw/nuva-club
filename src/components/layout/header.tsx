@@ -1,11 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { RoleSwitcher } from './role-switcher';
 import { NotificationBell } from './notification-bell';
-import { useUser } from '@/lib/mock';
+import { useAuthContext } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils/cn';
 
 interface HeaderProps {
@@ -13,13 +11,22 @@ interface HeaderProps {
 }
 
 export function Header({ className }: HeaderProps) {
-  const { user, isLoggedIn, logout } = useUser();
-  const router = useRouter();
+  const { profile, isAuthenticated, signOut, loading } = useAuthContext();
 
-  const handleLogout = () => {
-    logout();
-    router.push('/club/login');
-  };
+  if (loading) {
+    return (
+      <header className={cn('sticky top-0 z-50 w-full border-b bg-white/95 backdrop-blur', className)}>
+        <div className="container flex h-16 items-center">
+          <div className="mr-4 flex">
+            <span className="font-bold text-xl text-primary">nuva</span>
+          </div>
+          <div className="flex flex-1 items-center justify-end">
+            <div className="w-8 h-8 rounded-full bg-muted animate-pulse" />
+          </div>
+        </div>
+      </header>
+    );
+  }
 
   return (
     <header
@@ -30,32 +37,36 @@ export function Header({ className }: HeaderProps) {
     >
       <div className="container flex h-16 items-center">
         <div className="mr-4 flex">
-          <Link href={isLoggedIn ? '/club/dashboard' : '/club/login'} className="mr-6 flex items-center space-x-2">
+          <Link href={isAuthenticated ? '/club/dashboard' : '/club/login'} className="mr-6 flex items-center space-x-2">
             <span className="font-bold text-xl text-primary">nuva</span>
           </Link>
         </div>
 
         <div className="flex flex-1 items-center justify-end space-x-4">
-          {isLoggedIn && user ? (
+          {isAuthenticated && profile ? (
             <div className="flex items-center gap-3">
               <NotificationBell />
               <div className="hidden md:flex items-center gap-3">
-                {user.image && (
+                {profile.image && (
                   <img
-                    src={user.image}
-                    alt={user.name}
+                    src={profile.image}
+                    alt={profile.name}
                     className="w-8 h-8 rounded-full object-cover"
                   />
                 )}
-                <span className="text-sm font-medium text-foreground">
-                  {user.name}
-                </span>
+                <div className="flex flex-col">
+                  <span className="text-sm font-medium text-foreground">
+                    {profile.name}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    Lv.{profile.level} {profile.role === 'vava' ? '法法' : profile.role === 'nunu' ? '努努' : '守護者'}
+                  </span>
+                </div>
               </div>
-              <RoleSwitcher />
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleLogout}
+                onClick={signOut}
                 className="rounded-full"
               >
                 登出
@@ -64,7 +75,7 @@ export function Header({ className }: HeaderProps) {
           ) : (
             <Link href="/club/login">
               <Button size="sm" className="rounded-full">
-                Login
+                登入
               </Button>
             </Link>
           )}

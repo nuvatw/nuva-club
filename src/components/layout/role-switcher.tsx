@@ -1,7 +1,7 @@
 'use client';
 
-import { useUser, useRole } from '@/lib/mock';
-import type { UserRole } from '@/types';
+import { useAuth } from '@/hooks/useAuth';
+import type { UserRole } from '@/types/database';
 import { cn } from '@/lib/utils/cn';
 
 const ROLE_CONFIG: Record<UserRole, { label: string; color: string; icon: string }> = {
@@ -11,11 +11,18 @@ const ROLE_CONFIG: Record<UserRole, { label: string; color: string; icon: string
 };
 
 export function RoleSwitcher() {
-  const { user } = useUser();
-  const { role, availableRoles, switchRole } = useRole();
+  const { profile, switchRole } = useAuth();
 
-  if (!user || availableRoles.length <= 1) {
-    const config = ROLE_CONFIG[role];
+  if (!profile) {
+    return null;
+  }
+
+  const currentRole = profile.role;
+  const availableRoles = profile.available_roles || [currentRole];
+
+  // If only one role, just show the badge
+  if (availableRoles.length <= 1) {
+    const config = ROLE_CONFIG[currentRole];
     return (
       <span
         className={cn(
@@ -29,17 +36,18 @@ export function RoleSwitcher() {
     );
   }
 
+  // Multiple roles - show switcher
   return (
     <div className="relative group">
       <button
         className={cn(
           'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium border transition-all',
           'hover:ring-2 hover:ring-offset-1 hover:ring-primary/20',
-          ROLE_CONFIG[role].color
+          ROLE_CONFIG[currentRole].color
         )}
       >
-        <span>{ROLE_CONFIG[role].icon}</span>
-        <span>{ROLE_CONFIG[role].label}</span>
+        <span>{ROLE_CONFIG[currentRole].icon}</span>
+        <span>{ROLE_CONFIG[currentRole].label}</span>
         <svg
           className="w-3 h-3 ml-1 opacity-60"
           fill="none"
@@ -50,7 +58,7 @@ export function RoleSwitcher() {
         </svg>
       </button>
 
-      <div className="absolute right-0 mt-2 py-1 w-40 bg-white rounded-lg shadow-lg border opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+      <div className="absolute right-0 mt-2 py-1 w-40 bg-white dark:bg-gray-900 rounded-lg shadow-lg border opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
         <div className="px-3 py-2 text-xs text-muted-foreground border-b">
           切換角色：
         </div>
@@ -62,12 +70,12 @@ export function RoleSwitcher() {
               onClick={() => switchRole(r)}
               className={cn(
                 'w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover:bg-muted/50 transition-colors',
-                role === r && 'bg-muted/80'
+                currentRole === r && 'bg-muted/80'
               )}
             >
               <span>{config.icon}</span>
               <span>{config.label}</span>
-              {role === r && (
+              {currentRole === r && (
                 <svg className="w-4 h-4 ml-auto text-primary" fill="currentColor" viewBox="0 0 20 20">
                   <path
                     fillRule="evenodd"

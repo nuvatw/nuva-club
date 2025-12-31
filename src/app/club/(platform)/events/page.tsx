@@ -1,21 +1,21 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils/cn';
-import { MOCK_EVENTS, type MockEvent } from '@/lib/mock/events';
-import { useSimulatedTime } from '@/lib/mock/simulated-time-context';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+import type { Event } from '@/types/database';
 
 // Type filters
-type TypeFilter = 'all' | 'online' | 'offline' | 'challenge';
+type TypeFilter = 'all' | 'online' | 'offline';
 const TYPE_FILTERS: { key: TypeFilter; label: string; emoji: string }[] = [
   { key: 'all', label: '全部', emoji: '📋' },
   { key: 'online', label: '線上', emoji: '💻' },
   { key: 'offline', label: '實體', emoji: '📍' },
-  { key: 'challenge', label: '挑戰', emoji: '🎯' },
 ];
 
 // Status filters
@@ -45,43 +45,67 @@ function formatWeekday(dateStr: string) {
 }
 
 export default function EventsPage() {
+  const router = useRouter();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [events, setEvents] = useState<Event[]>([]);
+  const [loading, setLoading] = useState(true);
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('upcoming');
-  const { currentDate: simulatedDate } = useSimulatedTime();
+
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
+    }
+  }, [authLoading, isAuthenticated, router]);
+
+  useEffect(() => {
+    if (!profile) return;
+
+    const fetchEvents = async () => {
+      const supabase = getClient();
+      const { data } = await supabase
+        .from('events')
+        .select('*')
+        .order('start_date', { ascending: true });
+
+      if (data) {
+        setEvents(data);
+      }
+      setLoading(false);
+    };
+
+    fetchEvents();
+  }, [profile]);
 
   // Filter and group events by month
   const groupedEvents = useMemo(() => {
-    const now = simulatedDate;
+    const now = new Date();
 
-    let filtered = MOCK_EVENTS;
+    let filtered = [...events];
 
     // Status filter
     if (statusFilter === 'upcoming') {
-      filtered = filtered.filter(e => new Date(e.startDate) > now);
+      filtered = filtered.filter(e => new Date(e.start_date) > now);
     } else {
-      filtered = filtered.filter(e => new Date(e.endDate) < now);
+      filtered = filtered.filter(e => new Date(e.end_date) < now);
     }
 
     // Type filter
-    if (typeFilter === 'online') {
-      filtered = filtered.filter(e => e.type === 'online');
-    } else if (typeFilter === 'offline') {
-      filtered = filtered.filter(e => e.type === 'offline');
-    } else if (typeFilter === 'challenge') {
-      filtered = filtered.filter(e => e.challengeId);
+    if (typeFilter !== 'all') {
+      filtered = filtered.filter(e => e.type === typeFilter);
     }
 
     // Sort
     filtered = filtered.sort((a, b) => {
-      const aTime = new Date(a.startDate).getTime();
-      const bTime = new Date(b.startDate).getTime();
+      const aTime = new Date(a.start_date).getTime();
+      const bTime = new Date(b.start_date).getTime();
       return statusFilter === 'upcoming' ? aTime - bTime : bTime - aTime;
     });
 
     // Group by month
-    const grouped: Record<string, MockEvent[]> = {};
+    const grouped: Record<string, Event[]> = {};
     filtered.forEach(event => {
-      const date = new Date(event.startDate);
+      const date = new Date(event.start_date);
       const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
       if (!grouped[monthKey]) {
         grouped[monthKey] = [];
@@ -90,7 +114,19 @@ export default function EventsPage() {
     });
 
     return grouped;
-  }, [typeFilter, statusFilter, simulatedDate]);
+  }, [events, typeFilter, statusFilter]);
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return null;
+  }
 
   const monthKeys = Object.keys(groupedEvents);
 
@@ -154,7 +190,7 @@ export default function EventsPage() {
         <div className="space-y-8">
           {monthKeys.slice(0, 5).map(monthKey => {
             const [year, month] = monthKey.split('-').map(Number);
-            const events = groupedEvents[monthKey];
+            const monthEvents = groupedEvents[monthKey];
 
             return (
               <div key={monthKey}>
@@ -166,12 +202,12 @@ export default function EventsPage() {
 
                 {/* Events Timeline */}
                 <div className="relative pl-8 border-l-2 border-muted space-y-4">
-                  {events.slice(0, 10).map((event) => (
+                  {monthEvents.slice(0, 10).map((event) => (
                     <EventTimelineItem key={event.id} event={event} />
                   ))}
-                  {events.length > 10 && (
+                  {monthEvents.length > 10 && (
                     <p className="text-sm text-muted-foreground pl-4">
-                      還有 {events.length - 10} 個活動...
+                      還有 {monthEvents.length - 10} 個活動...
                     </p>
                   )}
                 </div>
@@ -184,11 +220,10 @@ export default function EventsPage() {
   );
 }
 
-function EventTimelineItem({ event }: { event: MockEvent }) {
-  const { currentDate: simulatedDate } = useSimulatedTime();
-  const now = simulatedDate;
-  const startDate = new Date(event.startDate);
-  const endDate = new Date(event.endDate);
+function EventTimelineItem({ event }: { event: Event }) {
+  const now = new Date();
+  const startDate = new Date(event.start_date);
+  const endDate = new Date(event.end_date);
   const isPast = endDate < now;
   const isOngoing = startDate <= now && endDate >= now;
 
@@ -211,8 +246,8 @@ function EventTimelineItem({ event }: { event: MockEvent }) {
             <div className="flex gap-4">
               {/* Date */}
               <div className="text-center shrink-0 w-12">
-                <div className="text-2xl font-bold">{formatDay(event.startDate)}</div>
-                <div className="text-xs text-muted-foreground">週{formatWeekday(event.startDate)}</div>
+                <div className="text-2xl font-bold">{formatDay(event.start_date)}</div>
+                <div className="text-xs text-muted-foreground">週{formatWeekday(event.start_date)}</div>
               </div>
 
               {/* Content */}
@@ -229,7 +264,7 @@ function EventTimelineItem({ event }: { event: MockEvent }) {
 
                 {/* Time */}
                 <p className="text-sm text-muted-foreground mb-2">
-                  {formatTime(event.startDate)} - {formatTime(event.endDate)}
+                  {formatTime(event.start_date)} - {formatTime(event.end_date)}
                 </p>
 
                 {/* Location or Link */}
@@ -249,14 +284,8 @@ function EventTimelineItem({ event }: { event: MockEvent }) {
                   {isOngoing && (
                     <Badge variant="destructive" className="text-xs">進行中</Badge>
                   )}
-                  {event.challengeId && (
-                    <Badge variant="outline" className="text-xs">🎯 挑戰活動</Badge>
-                  )}
-                  {event.clubOnly && (
-                    <Badge variant="outline" className="text-xs">會員限定</Badge>
-                  )}
                   <span className="text-xs text-muted-foreground ml-auto">
-                    {event.rsvpCount} 人參加
+                    {event.rsvp_count} 人參加
                   </span>
                 </div>
               </div>

@@ -1,77 +1,176 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { useUser, useDatabase, LEVELS } from '@/lib/mock';
-import type { LevelNumber } from '@/types';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+import type { Course } from '@/types/database';
 import { cn } from '@/lib/utils/cn';
+
+type LevelNumber = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
+
+const LEVELS = [
+  { level: 1, displayName: 'Lv.1', stageName: '入門' },
+  { level: 2, displayName: 'Lv.2', stageName: '入門' },
+  { level: 3, displayName: 'Lv.3', stageName: '入門' },
+  { level: 4, displayName: 'Lv.4', stageName: '進階' },
+  { level: 5, displayName: 'Lv.5', stageName: '進階' },
+  { level: 6, displayName: 'Lv.6', stageName: '進階' },
+  { level: 7, displayName: 'Lv.7', stageName: '高階' },
+  { level: 8, displayName: 'Lv.8', stageName: '高階' },
+  { level: 9, displayName: 'Lv.9', stageName: '高階' },
+  { level: 10, displayName: 'Lv.10', stageName: '專家' },
+  { level: 11, displayName: 'Lv.11', stageName: '專家' },
+  { level: 12, displayName: 'Lv.12', stageName: '大師' },
+];
+
+interface LevelProgress {
+  level: number;
+  totalCourses: number;
+  completedCourses: number;
+}
 
 export default function LevelsPage() {
   const router = useRouter();
-  const { user, isLoggedIn } = useUser();
-  const {
-    state,
-    getCompletedCoursesForLevel,
-    getTotalCoursesForLevel,
-    isLevelCompleted,
-    canTakeLevelTest,
-    getCourseProgress,
-  } = useDatabase();
-
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
   const [selectedLevel, setSelectedLevel] = useState<LevelNumber | null>(null);
+  const [levelProgress, setLevelProgress] = useState<Record<number, LevelProgress>>({});
+  const [selectedCourses, setSelectedCourses] = useState<Course[]>([]);
+  const [courseProgress, setCourseProgress] = useState<Record<string, { completed: number; isCompleted: boolean }>>({});
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!isLoggedIn) {
+    if (!authLoading && !isAuthenticated) {
       router.push('/club/login');
     }
-  }, [isLoggedIn, router]);
+  }, [authLoading, isAuthenticated, router]);
 
   useEffect(() => {
-    // Auto-select user's current level on load
-    if (user && !selectedLevel) {
-      setSelectedLevel(user.level);
+    if (profile && !selectedLevel) {
+      setSelectedLevel(profile.level as LevelNumber);
     }
-  }, [user, selectedLevel]);
+  }, [profile, selectedLevel]);
 
-  if (!user) {
+  useEffect(() => {
+    if (!profile) return;
+
+    const fetchLevelProgress = async () => {
+      const supabase = getClient();
+
+      const { data: courses } = await supabase
+        .from('courses')
+        .select('id, level');
+
+      const { data: completed } = await supabase
+        .from('user_course_progress')
+        .select('course_id')
+        .eq('user_id', profile.id)
+        .eq('is_completed', true);
+
+      const completedIds = new Set(completed?.map(c => c.course_id) || []);
+
+      const progress: Record<number, LevelProgress> = {};
+      for (let level = 1; level <= 12; level++) {
+        const levelCourses = courses?.filter(c => c.level === level) || [];
+        const completedCount = levelCourses.filter(c => completedIds.has(c.id)).length;
+        progress[level] = {
+          level,
+          totalCourses: levelCourses.length,
+          completedCourses: completedCount,
+        };
+      }
+      setLevelProgress(progress);
+      setLoading(false);
+    };
+
+    fetchLevelProgress();
+  }, [profile]);
+
+  useEffect(() => {
+    if (!profile || !selectedLevel) return;
+
+    const fetchCoursesForLevel = async () => {
+      const supabase = getClient();
+
+      const { data: courses } = await supabase
+        .from('courses')
+        .select('*')
+        .eq('level', selectedLevel)
+        .order('id');
+
+      setSelectedCourses(courses || []);
+
+      if (courses && courses.length > 0) {
+        const courseIds = courses.map(c => c.id);
+        const { data: progress } = await supabase
+          .from('user_course_progress')
+          .select('course_id, is_completed')
+          .eq('user_id', profile.id)
+          .in('course_id', courseIds);
+
+        const { data: lessonProgress } = await supabase
+          .from('user_lesson_progress')
+          .select('course_id')
+          .eq('user_id', profile.id)
+          .eq('is_completed', true)
+          .in('course_id', courseIds);
+
+        const progressMap: Record<string, { completed: number; isCompleted: boolean }> = {};
+        courses.forEach(course => {
+          const courseP = progress?.find(p => p.course_id === course.id);
+          const lessonCount = lessonProgress?.filter(l => l.course_id === course.id).length || 0;
+          progressMap[course.id] = {
+            completed: lessonCount,
+            isCompleted: courseP?.is_completed || false,
+          };
+        });
+        setCourseProgress(progressMap);
+      }
+    };
+
+    fetchCoursesForLevel();
+  }, [profile, selectedLevel]);
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
     return null;
   }
 
-  const userLevel = user.level;
+  const userLevel = profile.level;
   const levels: LevelNumber[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
   const getLevelStatus = (level: LevelNumber): 'completed' | 'current' | 'locked' => {
-    if (isLevelCompleted(level)) return 'completed';
+    const progress = levelProgress[level];
+    if (progress && progress.completedCourses === progress.totalCourses && progress.totalCourses > 0) {
+      return 'completed';
+    }
     if (level === userLevel) return 'current';
     if (level < userLevel) return 'completed';
     return 'locked';
   };
 
-  const getCoursesForLevel = (level: LevelNumber) => {
-    return state.courses.filter(c => c.level === level);
-  };
-
   const selectedLevelInfo = selectedLevel ? LEVELS.find(l => l.level === selectedLevel) : null;
-  const selectedCourses = selectedLevel ? getCoursesForLevel(selectedLevel) : [];
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold">等級總覽</h1>
         <p className="text-muted-foreground">點擊等級查看課程內容</p>
       </div>
 
-      {/* 12 Level Grid - Horizontal */}
       <div className="grid grid-cols-6 md:grid-cols-12 gap-2">
         {levels.map(level => {
           const status = getLevelStatus(level);
-          const completedCourses = getCompletedCoursesForLevel(level);
-          const totalCourses = getTotalCoursesForLevel(level);
+          const progress = levelProgress[level] || { totalCourses: 0, completedCourses: 0 };
           const isSelected = selectedLevel === level;
 
           return (
@@ -96,8 +195,7 @@ export default function LevelsPage() {
               {status === 'locked' && (
                 <LockIcon className="absolute top-1 right-1 w-3 h-3 text-muted-foreground" />
               )}
-              {/* Progress indicator */}
-              {status !== 'locked' && totalCourses > 0 && (
+              {status !== 'locked' && progress.totalCourses > 0 && (
                 <div className="absolute bottom-1 left-1 right-1">
                   <div className="h-1 bg-black/10 rounded-full overflow-hidden">
                     <div
@@ -105,7 +203,7 @@ export default function LevelsPage() {
                         'h-full rounded-full',
                         isSelected ? 'bg-white/60' : status === 'completed' ? 'bg-green-500' : 'bg-primary'
                       )}
-                      style={{ width: `${(completedCourses / totalCourses) * 100}%` }}
+                      style={{ width: `${(progress.completedCourses / progress.totalCourses) * 100}%` }}
                     />
                   </div>
                 </div>
@@ -115,7 +213,6 @@ export default function LevelsPage() {
         })}
       </div>
 
-      {/* Stage Labels */}
       <div className="grid grid-cols-4 gap-2 text-center text-xs text-muted-foreground">
         <div className="border-t pt-2">
           <span className="font-medium">入門</span>
@@ -135,7 +232,6 @@ export default function LevelsPage() {
         </div>
       </div>
 
-      {/* Selected Level Detail */}
       {selectedLevel && selectedLevelInfo && (
         <Card>
           <CardHeader className="pb-3">
@@ -157,42 +253,35 @@ export default function LevelsPage() {
               <div className="text-right">
                 <p className="text-sm text-muted-foreground">課程進度</p>
                 <p className="text-lg font-semibold">
-                  {getCompletedCoursesForLevel(selectedLevel)}/{getTotalCoursesForLevel(selectedLevel)} 完成
+                  {levelProgress[selectedLevel]?.completedCourses || 0}/{levelProgress[selectedLevel]?.totalCourses || 0} 完成
                 </p>
               </div>
             </div>
           </CardHeader>
           <CardContent>
-            {/* Course List */}
             <div className="space-y-2">
               {selectedCourses.length === 0 ? (
                 <p className="text-center py-8 text-muted-foreground">此等級尚無課程</p>
               ) : (
                 selectedCourses.map(course => {
-                  const progress = getCourseProgress(course.id);
+                  const progress = courseProgress[course.id];
                   const isCompleted = progress?.isCompleted;
-                  const isInProgress = progress?.isEnrolled && !isCompleted && (progress?.completedLessons?.length ?? 0) > 0;
-                  const isEnrolled = progress?.isEnrolled;
+                  const hasProgress = (progress?.completed || 0) > 0;
 
                   return (
-                    <Link
-                      key={course.id}
-                      href={`/club/courses/${course.id}`}
-                      className="block"
-                    >
+                    <Link key={course.id} href={`/club/courses/${course.id}`} className="block">
                       <div className={cn(
                         'flex items-center gap-4 p-4 rounded-lg border transition-all hover:shadow-md',
                         isCompleted ? 'bg-green-50 border-green-200' :
-                        isInProgress ? 'bg-primary/5 border-primary/20' :
+                        hasProgress ? 'bg-primary/5 border-primary/20' :
                         'hover:bg-muted/50'
                       )}>
-                        {/* Status Icon */}
                         <div className="flex-shrink-0">
                           {isCompleted ? (
                             <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
                               <CheckCircleIcon className="w-6 h-6 text-green-600" />
                             </div>
-                          ) : isInProgress ? (
+                          ) : hasProgress ? (
                             <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
                               <PlayCircleIcon className="w-6 h-6 text-primary" />
                             </div>
@@ -202,40 +291,23 @@ export default function LevelsPage() {
                             </div>
                           )}
                         </div>
-
-                        {/* Course Info */}
                         <div className="flex-1 min-w-0">
-                          <p className={cn(
-                            'font-medium truncate',
-                            isCompleted && 'text-green-700'
-                          )}>
+                          <p className={cn('font-medium truncate', isCompleted && 'text-green-700')}>
                             {course.title}
                           </p>
                           <p className="text-sm text-muted-foreground">
-                            {course.lessonsCount} 課 · {course.totalDuration} 分鐘
+                            {course.lessons_count} 課 · {course.total_duration} 分鐘
                           </p>
                         </div>
-
-                        {/* Progress / Status */}
                         <div className="flex-shrink-0 text-right">
                           {isCompleted ? (
-                            <span className="text-sm font-medium text-green-600">已完成 ✓</span>
-                          ) : isInProgress ? (
-                            <div>
-                              <span className="text-sm font-medium text-primary">
-                                {progress?.completedLessons?.length}/{course.lessonsCount} 課
-                              </span>
-                              <div className="w-20 h-1.5 bg-muted rounded-full mt-1">
-                                <div
-                                  className="h-full bg-primary rounded-full"
-                                  style={{ width: `${((progress?.completedLessons?.length ?? 0) / course.lessonsCount) * 100}%` }}
-                                />
-                              </div>
-                            </div>
-                          ) : isEnrolled ? (
-                            <span className="text-sm text-muted-foreground">未開始</span>
+                            <span className="text-sm font-medium text-green-600">已完成</span>
+                          ) : hasProgress ? (
+                            <span className="text-sm font-medium text-primary">
+                              {progress?.completed}/{course.lessons_count} 課
+                            </span>
                           ) : (
-                            <span className="text-sm text-muted-foreground">未報名</span>
+                            <span className="text-sm text-muted-foreground">未開始</span>
                           )}
                         </div>
                       </div>
@@ -244,31 +316,6 @@ export default function LevelsPage() {
                 })
               )}
             </div>
-
-            {/* Level Test CTA */}
-            {canTakeLevelTest(selectedLevel) && (
-              <div className="mt-4 p-4 bg-primary/10 rounded-lg border border-primary/20">
-                <p className="font-medium text-primary mb-2">
-                  恭喜！你已完成 {selectedLevelInfo.displayName} 所有課程
-                </p>
-                <p className="text-sm text-muted-foreground mb-3">
-                  準備好挑戰升級測驗了嗎？通過測驗即可解鎖第 {selectedLevel + 1} 級課程！
-                </p>
-                <Link href={`/placement?type=level_up&targetLevel=${selectedLevel + 1}`}>
-                  <Button className="w-full">開始升級測驗</Button>
-                </Link>
-              </div>
-            )}
-
-            {/* Already completed */}
-            {isLevelCompleted(selectedLevel) && selectedLevel < 12 && (
-              <div className="mt-4 p-4 bg-green-50 rounded-lg border border-green-200">
-                <div className="flex items-center gap-2 text-green-700">
-                  <CheckCircleIcon className="w-5 h-5" />
-                  <span className="font-medium">測驗已通過！已解鎖第 {selectedLevel + 1} 級</span>
-                </div>
-              </div>
-            )}
           </CardContent>
         </Card>
       )}
@@ -276,7 +323,6 @@ export default function LevelsPage() {
   );
 }
 
-// Icon Components
 function CheckIcon({ className }: { className?: string }) {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={className}>

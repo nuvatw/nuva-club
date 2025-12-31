@@ -1,12 +1,29 @@
 'use client';
 
-import { useState, use } from 'react';
+import { useState, useEffect, use } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { getFeedbackForStudent, MOCK_COACH_STUDENTS, LEVELS } from '@/lib/mock';
 import { cn } from '@/lib/utils/cn';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+import type { Profile, Feedback } from '@/types/database';
+
+const LEVELS = [
+  { level: 1, displayName: 'Lv.1' },
+  { level: 2, displayName: 'Lv.2' },
+  { level: 3, displayName: 'Lv.3' },
+  { level: 4, displayName: 'Lv.4' },
+  { level: 5, displayName: 'Lv.5' },
+  { level: 6, displayName: 'Lv.6' },
+  { level: 7, displayName: 'Lv.7' },
+  { level: 8, displayName: 'Lv.8' },
+  { level: 9, displayName: 'Lv.9' },
+  { level: 10, displayName: 'Lv.10' },
+  { level: 11, displayName: 'Lv.11' },
+  { level: 12, displayName: 'Lv.12' },
+];
 
 function formatDate(dateStr: string) {
   return new Date(dateStr).toLocaleDateString('zh-TW', {
@@ -22,6 +39,10 @@ function getLevelName(level: number) {
   return LEVELS.find((l) => l.level === level)?.displayName || `第 ${level} 級`;
 }
 
+interface StudentWithAssignment extends Profile {
+  assigned_at?: string;
+}
+
 export default function StudentDetailPage({
   params,
 }: {
@@ -29,45 +50,124 @@ export default function StudentDetailPage({
 }) {
   const { studentId } = use(params);
   const router = useRouter();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [student, setStudent] = useState<StudentWithAssignment | null>(null);
+  const [feedback, setFeedback] = useState<Feedback[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [newFeedback, setNewFeedback] = useState({
-    type: 'check_in' as 'check_in' | 'challenge_feedback',
-    feedbackContent: '',
+    content: '',
     rating: 0,
   });
-  const [localFeedback, setLocalFeedback] = useState<Array<{
-    id: string;
-    type: 'check_in' | 'challenge_feedback';
-    feedbackContent: string;
-    rating: number;
-    createdAt: string;
-  }>>([]);
 
-  const student = MOCK_COACH_STUDENTS.find(s => s.id === studentId);
-  const existingFeedback = getFeedbackForStudent(studentId);
-  const allFeedback = [...localFeedback, ...existingFeedback];
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
+    }
+  }, [authLoading, isAuthenticated, router]);
 
-  const handleSubmit = () => {
-    if (!newFeedback.feedbackContent.trim()) return;
+  useEffect(() => {
+    if (!authLoading && profile && profile.role !== 'nunu') {
+      router.push('/club/dashboard');
+    }
+  }, [authLoading, profile, router]);
 
-    // Add to local feedback for demo
-    setLocalFeedback(prev => [{
-      id: `feedback-local-${Date.now()}`,
-      type: newFeedback.type,
-      feedbackContent: newFeedback.feedbackContent,
-      rating: newFeedback.rating,
-      createdAt: new Date().toISOString(),
-    }, ...prev]);
+  useEffect(() => {
+    if (!profile) return;
 
-    setNewFeedback({ type: 'check_in', feedbackContent: '', rating: 0 });
+    const fetchData = async () => {
+      const supabase = getClient();
+
+      // Check if this student is assigned to this coach
+      const { data: assignmentData } = await supabase
+        .from('coach_students')
+        .select(`
+          assigned_at,
+          student:profiles!coach_students_student_id_fkey(*)
+        `)
+        .eq('coach_id', profile.id)
+        .eq('student_id', studentId)
+        .single();
+
+      if (assignmentData?.student) {
+        const studentData = Array.isArray(assignmentData.student)
+          ? assignmentData.student[0]
+          : assignmentData.student;
+        setStudent({
+          ...(studentData as Profile),
+          assigned_at: assignmentData.assigned_at,
+        });
+      }
+
+      // Fetch feedback for this student from this coach
+      const { data: feedbackData } = await supabase
+        .from('feedback')
+        .select('*')
+        .eq('nunu_id', profile.id)
+        .eq('vava_id', studentId)
+        .order('created_at', { ascending: false });
+
+      if (feedbackData) {
+        setFeedback(feedbackData);
+      }
+
+      setLoading(false);
+    };
+
+    fetchData();
+  }, [profile, studentId]);
+
+  const handleSubmit = async () => {
+    if (!newFeedback.content.trim() || !profile || !student) return;
+
+    setSubmitting(true);
+    const supabase = getClient();
+
+    const { data, error } = await supabase
+      .from('feedback')
+      .insert({
+        id: crypto.randomUUID(),
+        nunu_id: profile.id,
+        vava_id: studentId,
+        content: newFeedback.content,
+        rating: newFeedback.rating || null,
+      })
+      .select()
+      .single();
+
+    if (data && !error) {
+      setFeedback(prev => [data, ...prev]);
+
+      // Update feedback count in coach_students
+      await supabase.rpc('increment_feedback_count', {
+        p_coach_id: profile.id,
+        p_student_id: studentId,
+      });
+    }
+
+    setNewFeedback({ content: '', rating: 0 });
     setShowForm(false);
+    setSubmitting(false);
   };
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return null;
+  }
 
   if (!student) {
     return (
       <div className="space-y-4">
-        <Button variant="ghost" onClick={() => router.push('/club/nunu/dashboard')}>
-          ← 返回教練主頁
+        <Button variant="ghost" onClick={() => router.push('/club/nunu/vavas')}>
+          ← 返回學員列表
         </Button>
         <Card>
           <CardContent className="py-12 text-center">
@@ -86,9 +186,9 @@ export default function StudentDetailPage({
           variant="ghost"
           size="sm"
           className="mb-2"
-          onClick={() => router.push('/club/nunu/dashboard')}
+          onClick={() => router.push('/club/nunu/vavas')}
         >
-          ← 返回教練主頁
+          ← 返回學員列表
         </Button>
       </div>
 
@@ -116,16 +216,18 @@ export default function StudentDetailPage({
               <div className="flex gap-4 mt-3 text-sm">
                 <div>
                   <span className="text-muted-foreground">方案：</span>
-                  <span className="font-medium">{student.planType === 'club' ? '俱樂部' : '基礎'}</span>
+                  <span className="font-medium">{student.plan_type === 'club' ? '俱樂部' : '基礎'}</span>
                 </div>
                 <div>
                   <span className="text-muted-foreground">加入：</span>
-                  <span className="font-medium">{student.cohortMonth}</span>
+                  <span className="font-medium">{student.cohort_month}</span>
                 </div>
-                <div>
-                  <span className="text-muted-foreground">配對於：</span>
-                  <span className="font-medium">{new Date(student.assignedAt).toLocaleDateString('zh-TW')}</span>
-                </div>
+                {student.assigned_at && (
+                  <div>
+                    <span className="text-muted-foreground">配對於：</span>
+                    <span className="font-medium">{new Date(student.assigned_at).toLocaleDateString('zh-TW')}</span>
+                  </div>
+                )}
               </div>
             </div>
             <Button onClick={() => setShowForm(true)}>給予回饋</Button>
@@ -141,41 +243,13 @@ export default function StudentDetailPage({
           </CardHeader>
           <CardContent className="space-y-4">
             <div>
-              <label className="block text-sm font-medium mb-2">類型</label>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setNewFeedback(prev => ({ ...prev, type: 'check_in' }))}
-                  className={cn(
-                    'px-4 py-2 rounded-lg border transition-all',
-                    newFeedback.type === 'check_in'
-                      ? 'bg-primary text-white border-primary'
-                      : 'hover:bg-muted'
-                  )}
-                >
-                  打卡回饋
-                </button>
-                <button
-                  onClick={() => setNewFeedback(prev => ({ ...prev, type: 'challenge_feedback' }))}
-                  className={cn(
-                    'px-4 py-2 rounded-lg border transition-all',
-                    newFeedback.type === 'challenge_feedback'
-                      ? 'bg-primary text-white border-primary'
-                      : 'hover:bg-muted'
-                  )}
-                >
-                  挑戰回饋
-                </button>
-              </div>
-            </div>
-
-            <div>
               <label className="block text-sm font-medium mb-2">回饋內容</label>
               <textarea
                 className="w-full min-h-[120px] p-3 rounded-lg border bg-background resize-none"
                 placeholder="寫下你的回饋..."
-                value={newFeedback.feedbackContent}
+                value={newFeedback.content}
                 onChange={(e) =>
-                  setNewFeedback((prev) => ({ ...prev, feedbackContent: e.target.value }))
+                  setNewFeedback((prev) => ({ ...prev, content: e.target.value }))
                 }
               />
             </div>
@@ -204,9 +278,9 @@ export default function StudentDetailPage({
             <div className="flex gap-2">
               <Button
                 onClick={handleSubmit}
-                disabled={!newFeedback.feedbackContent.trim()}
+                disabled={!newFeedback.content.trim() || submitting}
               >
-                送出回饋
+                {submitting ? '送出中...' : '送出回饋'}
               </Button>
               <Button variant="outline" onClick={() => setShowForm(false)}>
                 取消
@@ -220,26 +294,24 @@ export default function StudentDetailPage({
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">回饋紀錄</CardTitle>
-          <CardDescription>共 {allFeedback.length} 則回饋</CardDescription>
+          <CardDescription>共 {feedback.length} 則回饋</CardDescription>
         </CardHeader>
         <CardContent>
-          {allFeedback.length === 0 ? (
+          {feedback.length === 0 ? (
             <p className="text-center py-8 text-muted-foreground">
               尚未給予任何回饋
             </p>
           ) : (
             <div className="space-y-4">
-              {allFeedback.map((item) => (
+              {feedback.map((item) => (
                 <div key={item.id} className="p-4 rounded-lg border">
                   <div className="flex items-center justify-between mb-2">
-                    <Badge variant={item.type === 'check_in' ? 'default' : 'secondary'}>
-                      {item.type === 'check_in' ? '打卡回饋' : '挑戰回饋'}
-                    </Badge>
+                    <Badge variant="secondary">回饋</Badge>
                     <span className="text-sm text-muted-foreground">
-                      {formatDate(item.createdAt)}
+                      {formatDate(item.created_at)}
                     </span>
                   </div>
-                  <p className="whitespace-pre-wrap">{item.feedbackContent}</p>
+                  <p className="whitespace-pre-wrap">{item.content}</p>
                   {item.rating && item.rating > 0 && (
                     <div className="mt-2 text-amber-500">
                       {'★'.repeat(item.rating)}{'☆'.repeat(5 - item.rating)}

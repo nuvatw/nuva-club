@@ -7,7 +7,9 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils/cn';
-import { useUser, useDatabase } from '@/lib/mock';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+import type { Course, Lesson } from '@/types/database';
 
 function formatDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60);
@@ -20,6 +22,10 @@ function formatDuration(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
+interface CourseWithLessons extends Course {
+  lessons: Lesson[];
+}
+
 export default function LessonPage({
   params,
 }: {
@@ -27,37 +33,129 @@ export default function LessonPage({
 }) {
   const { courseId, lessonId } = use(params);
   const router = useRouter();
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const { user, isLoggedIn } = useUser();
-  const { state, getCourseProgress, completeLesson, dispatch } = useDatabase();
-
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [course, setCourse] = useState<CourseWithLessons | null>(null);
+  const [lesson, setLesson] = useState<Lesson | null>(null);
+  const [completedLessons, setCompletedLessons] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showCompletedToast, setShowCompletedToast] = useState(false);
 
   useEffect(() => {
-    if (!isLoggedIn) {
+    if (!authLoading && !isAuthenticated) {
       router.push('/club/login');
     }
-  }, [isLoggedIn, router]);
-
-  const course = state.courses.find(c => c.id === courseId);
-  const progress = getCourseProgress(courseId);
-  const lesson = course?.lessons.find(l => l.id === lessonId);
+  }, [authLoading, isAuthenticated, router]);
 
   useEffect(() => {
-    // Set current lesson when viewing
-    if (course && lesson && progress?.isEnrolled) {
-      dispatch({ type: 'START_LESSON', courseId, lessonId });
-    }
-  }, [courseId, lessonId, course, lesson, progress?.isEnrolled, dispatch]);
+    if (!profile) return;
 
-  if (!user) {
+    const fetchData = async () => {
+      const supabase = getClient();
+
+      // Fetch course
+      const { data: courseData } = await supabase
+        .from('courses')
+        .select('*')
+        .eq('id', courseId)
+        .single();
+
+      if (courseData) {
+        const { data: lessonsData } = await supabase
+          .from('lessons')
+          .select('*')
+          .eq('course_id', courseId)
+          .order('order', { ascending: true });
+
+        setCourse({
+          ...courseData,
+          lessons: lessonsData || [],
+        });
+
+        const currentLesson = lessonsData?.find(l => l.id === lessonId);
+        setLesson(currentLesson || null);
+      }
+
+      // Fetch completed lessons
+      const { data: lessonProgressData } = await supabase
+        .from('user_lesson_progress')
+        .select('lesson_id')
+        .eq('user_id', profile.id)
+        .eq('course_id', courseId)
+        .eq('is_completed', true);
+
+      if (lessonProgressData) {
+        setCompletedLessons(lessonProgressData.map(lp => lp.lesson_id));
+      }
+
+      // Update current lesson in progress
+      await supabase
+        .from('user_course_progress')
+        .update({ current_lesson_id: lessonId })
+        .eq('user_id', profile.id)
+        .eq('course_id', courseId);
+
+      setLoading(false);
+    };
+
+    fetchData();
+  }, [profile, courseId, lessonId]);
+
+  const handleMarkComplete = async () => {
+    if (!profile || completedLessons.includes(lessonId)) return;
+
+    const supabase = getClient();
+
+    // Upsert lesson progress
+    await supabase.from('user_lesson_progress').upsert({
+      user_id: profile.id,
+      lesson_id: lessonId,
+      course_id: courseId,
+      is_completed: true,
+      completed_at: new Date().toISOString(),
+      progress: 100,
+    }, {
+      onConflict: 'user_id,lesson_id',
+    });
+
+    setCompletedLessons(prev => [...prev, lessonId]);
+    setShowCompletedToast(true);
+    setTimeout(() => setShowCompletedToast(false), 3000);
+
+    // Check if all lessons are complete
+    if (course) {
+      const allComplete = course.lessons.every(l =>
+        completedLessons.includes(l.id) || l.id === lessonId
+      );
+
+      if (allComplete) {
+        await supabase
+          .from('user_course_progress')
+          .update({
+            is_completed: true,
+            completed_at: new Date().toISOString(),
+          })
+          .eq('user_id', profile.id)
+          .eq('course_id', courseId);
+      }
+    }
+  };
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
     return null;
   }
 
   if (!course || !lesson) {
     return (
       <div className="space-y-4">
-        <Button variant="outline" onClick={() => router.push(`/courses/${courseId}`)}>
+        <Button variant="outline" onClick={() => router.push(`/club/courses/${courseId}`)}>
           ← 返回課程
         </Button>
         <Card>
@@ -69,30 +167,22 @@ export default function LessonPage({
     );
   }
 
-  const completedLessons = progress?.completedLessons ?? [];
   const isCompleted = completedLessons.includes(lessonId);
   const currentIndex = course.lessons.findIndex(l => l.id === lessonId);
   const prevLesson = currentIndex > 0 ? course.lessons[currentIndex - 1] : null;
   const nextLesson = currentIndex < course.lessons.length - 1 ? course.lessons[currentIndex + 1] : null;
 
-  const handleMarkComplete = () => {
-    if (!isCompleted) {
-      completeLesson(courseId, lessonId);
-      setShowCompletedToast(true);
-      setTimeout(() => setShowCompletedToast(false), 3000);
-    }
-  };
-
-  const handleVideoEnded = () => {
-    if (!isCompleted) {
-      handleMarkComplete();
-    }
-  };
-
-  // Calculate if all lessons are now complete
   const allLessonsComplete = course.lessons.every(l =>
     completedLessons.includes(l.id) || l.id === lessonId
   );
+
+  // Extract YouTube video ID from URL
+  const getYouTubeVideoId = (url: string) => {
+    const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\s]+)/);
+    return match ? match[1] : null;
+  };
+
+  const youtubeVideoId = getYouTubeVideoId(lesson.video_url);
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
@@ -121,7 +211,7 @@ export default function LessonPage({
       {/* Lesson Title */}
       <div>
         <p className="text-sm text-muted-foreground mb-1">
-          第 {currentIndex + 1} 課 / 共 {course.lessonsCount} 課
+          第 {currentIndex + 1} 課 / 共 {course.lessons_count} 課
         </p>
         <h1 className="text-2xl font-bold">{lesson.title}</h1>
       </div>
@@ -129,16 +219,20 @@ export default function LessonPage({
       {/* Video Player */}
       <Card className="overflow-hidden">
         <div className="aspect-video bg-black flex items-center justify-center">
-          <video
-            ref={videoRef}
-            className="w-full h-full"
-            controls
-            onEnded={handleVideoEnded}
-            poster={course.thumbnail}
-          >
-            <source src={lesson.videoUrl || '/placeholder-video.mp4'} type="video/mp4" />
-            您的瀏覽器不支援影片播放
-          </video>
+          {youtubeVideoId ? (
+            <iframe
+              className="w-full h-full"
+              src={`https://www.youtube.com/embed/${youtubeVideoId}?rel=0`}
+              title={lesson.title}
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+            />
+          ) : (
+            <div className="text-white text-center p-8">
+              <p className="text-lg mb-2">影片載入中...</p>
+              <p className="text-sm text-gray-400">{lesson.video_url}</p>
+            </div>
+          )}
         </div>
       </Card>
 
@@ -149,7 +243,7 @@ export default function LessonPage({
             <div>
               <p className="font-medium">{lesson.title}</p>
               <p className="text-sm text-muted-foreground">
-                時長：{formatDuration(lesson.videoDuration)}
+                時長：{formatDuration(lesson.video_duration)}
               </p>
             </div>
             {!isCompleted ? (
@@ -248,7 +342,7 @@ export default function LessonPage({
                 >
                   <div
                     className={cn(
-                      'flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium',
+                      'shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium',
                       lessonCompleted
                         ? 'bg-green-500 text-white'
                         : isCurrent
@@ -270,7 +364,7 @@ export default function LessonPage({
                     {l.title}
                   </span>
                   <span className="text-xs text-muted-foreground">
-                    {formatDuration(l.videoDuration)}
+                    {formatDuration(l.video_duration)}
                   </span>
                   {isCurrent && (
                     <Badge variant="secondary" className="text-xs">

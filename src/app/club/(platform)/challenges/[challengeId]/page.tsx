@@ -7,7 +7,9 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils/cn';
-import { useUser, useDatabase, MOCK_USERS } from '@/lib/mock';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
+import type { Challenge, ChallengeParticipation, Post, Profile } from '@/types/database';
 
 const statusConfig = {
   upcoming: { label: '即將開始', variant: 'secondary' as const },
@@ -34,6 +36,20 @@ function getRemainingTime(endDate: string): string {
   return `${days} 天 ${hours} 小時 ${minutes} 分鐘`;
 }
 
+function getChallengeStatus(startDate: string, endDate: string): 'upcoming' | 'active' | 'ended' {
+  const now = new Date();
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  if (now < start) return 'upcoming';
+  if (now > end) return 'ended';
+  return 'active';
+}
+
+interface PostWithUser extends Post {
+  user?: Profile;
+  has_fired?: boolean;
+}
+
 export default function ChallengeDetailPage({
   params,
 }: {
@@ -41,32 +57,165 @@ export default function ChallengeDetailPage({
 }) {
   const { challengeId } = use(params);
   const router = useRouter();
-  const { user, isLoggedIn } = useUser();
-  const { state, getChallengeParticipation, joinChallenge, getChallengeLeaderboard, firePost, unfirePost } = useDatabase();
-
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [challenge, setChallenge] = useState<Challenge | null>(null);
+  const [participation, setParticipation] = useState<ChallengeParticipation | null>(null);
+  const [challengePosts, setChallengePosts] = useState<PostWithUser[]>([]);
+  const [participantCount, setParticipantCount] = useState(0);
+  const [loading, setLoading] = useState(true);
   const [showJoinedToast, setShowJoinedToast] = useState(false);
 
   useEffect(() => {
-    if (!isLoggedIn) {
+    if (!authLoading && !isAuthenticated) {
       router.push('/club/login');
     }
-  }, [isLoggedIn, router]);
+  }, [authLoading, isAuthenticated, router]);
 
-  if (!user) {
-    return null;
+  useEffect(() => {
+    if (!profile) return;
+
+    const fetchData = async () => {
+      const supabase = getClient();
+
+      // Fetch challenge
+      const { data: challengeData } = await supabase
+        .from('challenges')
+        .select('*')
+        .eq('id', challengeId)
+        .single();
+
+      if (challengeData) {
+        setChallenge(challengeData);
+      }
+
+      // Fetch user's participation
+      const { data: participationData } = await supabase
+        .from('challenge_participations')
+        .select('*')
+        .eq('challenge_id', challengeId)
+        .eq('user_id', profile.id)
+        .single();
+
+      if (participationData) {
+        setParticipation(participationData);
+      }
+
+      // Count total participants
+      const { count } = await supabase
+        .from('challenge_participations')
+        .select('*', { count: 'exact', head: true })
+        .eq('challenge_id', challengeId);
+
+      setParticipantCount(count || 0);
+
+      // Fetch challenge posts with user info
+      const { data: postsData } = await supabase
+        .from('posts')
+        .select(`
+          *,
+          user:profiles(id, name, image, level)
+        `)
+        .eq('category', 'challenge')
+        .eq('challenge_id', challengeId)
+        .order('likes_count', { ascending: false });
+
+      if (postsData) {
+        // Check which posts the user has fired
+        const postIds = postsData.map(p => p.id);
+        const { data: firesData } = await supabase
+          .from('post_fires')
+          .select('post_id')
+          .eq('user_id', profile.id)
+          .in('post_id', postIds);
+
+        const firedPostIds = new Set(firesData?.map(f => f.post_id) || []);
+
+        setChallengePosts(postsData.map(p => ({
+          ...p,
+          has_fired: firedPostIds.has(p.id),
+        })));
+      }
+
+      setLoading(false);
+    };
+
+    fetchData();
+  }, [profile, challengeId]);
+
+  const handleJoin = async () => {
+    if (!profile) return;
+
+    const supabase = getClient();
+    await supabase.from('challenge_participations').insert({
+      challenge_id: challengeId,
+      user_id: profile.id,
+    });
+
+    setParticipation({
+      id: '',
+      challenge_id: challengeId,
+      user_id: profile.id,
+      status: 'joined',
+      submission_url: null,
+      submitted_at: null,
+      created_at: new Date().toISOString(),
+    });
+    setParticipantCount(prev => prev + 1);
+    setShowJoinedToast(true);
+    setTimeout(() => setShowJoinedToast(false), 3000);
+  };
+
+  const handleFire = async (postId: string, hasFired: boolean) => {
+    if (!profile) return;
+
+    const supabase = getClient();
+
+    if (hasFired) {
+      // Remove fire
+      await supabase
+        .from('post_fires')
+        .delete()
+        .eq('post_id', postId)
+        .eq('user_id', profile.id);
+
+      // Decrement fire count
+      await supabase.rpc('decrement_likes_count', { p_post_id: postId });
+    } else {
+      // Add fire
+      await supabase.from('post_fires').insert({
+        post_id: postId,
+        user_id: profile.id,
+      });
+
+      // Increment fire count
+      await supabase.rpc('increment_likes_count', { p_post_id: postId });
+    }
+
+    // Update local state
+    setChallengePosts(prev =>
+      prev.map(p =>
+        p.id === postId
+          ? {
+              ...p,
+              has_fired: !hasFired,
+              likes_count: hasFired ? p.likes_count - 1 : p.likes_count + 1,
+            }
+          : p
+      )
+    );
+  };
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
   }
 
-  const challenge = state.challenges.find(c => c.id === challengeId);
-  const participation = getChallengeParticipation(challengeId, user.id);
-  const hasJoined = !!participation;
-
-  // Get challenge posts from community
-  const challengePosts = state.posts
-    .filter(p => p.category === 'challenge' && p.challengeId === challengeId)
-    .sort((a, b) => b.fireCount - a.fireCount);
-
-  // Get user's submission post
-  const myPost = challengePosts.find(p => p.userId === user.id);
+  if (!profile) {
+    return null;
+  }
 
   if (!challenge) {
     return (
@@ -83,19 +232,8 @@ export default function ChallengeDetailPage({
     );
   }
 
-  const handleJoin = () => {
-    joinChallenge(challengeId, user.id);
-    setShowJoinedToast(true);
-    setTimeout(() => setShowJoinedToast(false), 3000);
-  };
-
-  const handleFire = (postId: string, hasFired: boolean) => {
-    if (hasFired) {
-      unfirePost(postId, user.id);
-    } else {
-      firePost(postId, user.id);
-    }
-  };
+  const hasJoined = !!participation;
+  const myPost = challengePosts.find(p => p.user_id === profile.id);
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
@@ -120,27 +258,24 @@ export default function ChallengeDetailPage({
           </Button>
           <h1 className="text-2xl font-bold">{challenge.title}</h1>
           <p className="text-muted-foreground">
-            {formatDate(challenge.startDate)} - {formatDate(challenge.endDate)}
+            {formatDate(challenge.start_date)} - {formatDate(challenge.end_date)}
           </p>
         </div>
         <Badge
-          variant={statusConfig[challenge.status].variant}
+          variant={statusConfig[getChallengeStatus(challenge.start_date, challenge.end_date)]?.variant || 'secondary'}
           className={cn(
             "text-sm",
-            challenge.status === 'active' && "bg-purple-600"
+            getChallengeStatus(challenge.start_date, challenge.end_date) === 'active' && "bg-purple-600"
           )}
         >
-          {statusConfig[challenge.status].label}
+          {statusConfig[getChallengeStatus(challenge.start_date, challenge.end_date)]?.label}
         </Badge>
       </div>
 
-      {/* Challenge Image */}
-      {challenge.thumbnail && (
-        <div
-          className="w-full h-64 bg-cover bg-center rounded-lg"
-          style={{ backgroundImage: `url(${challenge.thumbnail})` }}
-        />
-      )}
+      {/* Challenge Banner */}
+      <div className="w-full h-48 bg-gradient-to-r from-purple-500/20 to-pink-500/20 rounded-lg flex items-center justify-center">
+        <span className="text-6xl">🏆</span>
+      </div>
 
       {/* Description */}
       <Card>
@@ -150,21 +285,30 @@ export default function ChallengeDetailPage({
         <CardContent className="space-y-4">
           <p className="text-muted-foreground">{challenge.description}</p>
 
-          {challenge.status === 'active' && (
+          {getChallengeStatus(challenge.start_date, challenge.end_date) === 'active' && (
             <div className="flex items-center gap-4 text-sm">
               <span className="text-muted-foreground">
-                {challenge.participantCount + state.challengeParticipations.filter(p => p.challengeId === challengeId).length} 位參與者
+                {participantCount} 位參與者
               </span>
               <span className="text-purple-600 font-medium">
-                剩餘 {getRemainingTime(challenge.endDate)}
+                剩餘 {getRemainingTime(challenge.end_date)}
               </span>
+            </div>
+          )}
+
+          {challenge.prize && (
+            <div className="p-3 bg-amber-50 rounded-lg">
+              <p className="text-sm">
+                <span className="font-medium">🎁 獎品：</span>
+                {challenge.prize}
+              </p>
             </div>
           )}
         </CardContent>
       </Card>
 
       {/* Participation Status / Join */}
-      {challenge.status === 'active' && (
+      {getChallengeStatus(challenge.start_date, challenge.end_date) === 'active' && (
         <Card className={cn(
           hasJoined ? "border-green-200 bg-green-50/30" : "border-purple-200 bg-purple-50/30"
         )}>
@@ -194,7 +338,7 @@ export default function ChallengeDetailPage({
                     <div className="flex items-center justify-between mt-3">
                       <div className="flex items-center gap-1">
                         <FireIcon className="w-4 h-4 text-orange-500" />
-                        <span className="font-medium">{myPost.fireCount}</span>
+                        <span className="font-medium">{myPost.likes_count}</span>
                       </div>
                       <Link href={`/club/community/${myPost.id}`}>
                         <Button variant="outline" size="sm">查看貼文</Button>
@@ -206,7 +350,7 @@ export default function ChallengeDetailPage({
                     <p className="text-sm text-muted-foreground">
                       準備好分享你的作品了嗎？發佈一篇挑戰作品到社群吧！
                     </p>
-                    <Link href={`/community?newPost=true&challenge=${challengeId}`}>
+                    <Link href={`/club/community?newPost=true&challenge=${challengeId}`}>
                       <Button className="bg-purple-600 hover:bg-purple-700">
                         發佈挑戰作品
                       </Button>
@@ -252,9 +396,8 @@ export default function ChallengeDetailPage({
           ) : (
             <div className="space-y-4">
               {challengePosts.map((post, index) => {
-                const postUser = MOCK_USERS.find(u => u.id === post.userId);
-                const hasFired = post.firedByUsers?.includes(user.id);
-                const isOwn = post.userId === user.id;
+                const postUser = post.user as Profile | undefined;
+                const isOwn = post.user_id === profile.id;
                 const rank = index + 1;
 
                 return (
@@ -305,9 +448,9 @@ export default function ChallengeDetailPage({
                         <p className="text-sm text-muted-foreground line-clamp-2 mt-1">
                           {post.content}
                         </p>
-                        {post.mediaUrl && (
+                        {post.image && (
                           <img
-                            src={post.mediaUrl}
+                            src={post.image}
                             alt=""
                             className="mt-2 rounded-lg max-h-32 object-cover"
                           />
@@ -316,18 +459,18 @@ export default function ChallengeDetailPage({
 
                       {/* Fire Button */}
                       <button
-                        onClick={() => handleFire(post.id, !!hasFired)}
+                        onClick={() => handleFire(post.id, !!post.has_fired)}
                         disabled={isOwn}
                         className={cn(
                           'flex items-center gap-1 px-3 py-2 rounded-lg transition-all',
-                          hasFired
+                          post.has_fired
                             ? 'bg-orange-100 text-orange-700'
                             : 'bg-muted hover:bg-orange-50',
                           isOwn && 'opacity-50 cursor-not-allowed'
                         )}
                       >
-                        <FireIcon className={cn("w-5 h-5", hasFired && "text-orange-500")} />
-                        <span className="font-bold">{post.fireCount}</span>
+                        <FireIcon className={cn("w-5 h-5", post.has_fired && "text-orange-500")} />
+                        <span className="font-bold">{post.likes_count}</span>
                       </button>
                     </div>
                   </div>
@@ -339,7 +482,7 @@ export default function ChallengeDetailPage({
           {/* View all in community */}
           {challengePosts.length > 0 && (
             <div className="mt-6 text-center">
-              <Link href={`/community?category=challenge&challengeId=${challengeId}`}>
+              <Link href={`/club/community?category=challenge&challengeId=${challengeId}`}>
                 <Button variant="outline">
                   在社群查看所有挑戰作品
                 </Button>

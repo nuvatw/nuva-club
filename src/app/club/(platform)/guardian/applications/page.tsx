@@ -1,12 +1,29 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { useUser, MOCK_USERS, LEVELS } from '@/lib/mock';
+import { useAuth } from '@/hooks/useAuth';
+import { getClient } from '@/lib/supabase/client';
 import { cn } from '@/lib/utils/cn';
+import type { Profile } from '@/types/database';
+
+const LEVELS = [
+  { level: 1, displayName: 'Lv.1' },
+  { level: 2, displayName: 'Lv.2' },
+  { level: 3, displayName: 'Lv.3' },
+  { level: 4, displayName: 'Lv.4' },
+  { level: 5, displayName: 'Lv.5' },
+  { level: 6, displayName: 'Lv.6' },
+  { level: 7, displayName: 'Lv.7' },
+  { level: 8, displayName: 'Lv.8' },
+  { level: 9, displayName: 'Lv.9' },
+  { level: 10, displayName: 'Lv.10' },
+  { level: 11, displayName: 'Lv.11' },
+  { level: 12, displayName: 'Lv.12' },
+];
 
 function getLevelName(level: number) {
   return LEVELS.find((l) => l.level === level)?.displayName || `第 ${level} 級`;
@@ -14,47 +31,103 @@ function getLevelName(level: number) {
 
 type ApplicationStatus = 'pending' | 'approved' | 'rejected';
 
-interface LocalApplication {
-  userId: string;
-  status: ApplicationStatus;
-  reviewedAt?: string;
-}
-
 export default function ApplicationsPage() {
   const router = useRouter();
-  const { user, approveNunuApplication } = useUser();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const [applicants, setApplicants] = useState<Profile[]>([]);
+  const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<'all' | ApplicationStatus>('all');
-  const [localUpdates, setLocalUpdates] = useState<Record<string, LocalApplication>>({});
+  const [updating, setUpdating] = useState<string | null>(null);
 
-  if (!user) {
-    return null;
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push('/club/login');
+    }
+  }, [authLoading, isAuthenticated, router]);
+
+  useEffect(() => {
+    if (!authLoading && profile && profile.role !== 'guardian') {
+      router.push('/club/dashboard');
+    }
+  }, [authLoading, profile, router]);
+
+  useEffect(() => {
+    if (!profile) return;
+
+    const fetchApplicants = async () => {
+      const supabase = getClient();
+      const { data } = await supabase
+        .from('profiles')
+        .select('*')
+        .neq('nunu_application_status', 'none')
+        .not('nunu_application_status', 'is', null)
+        .order('created_at', { ascending: false });
+
+      if (data) {
+        setApplicants(data);
+      }
+      setLoading(false);
+    };
+
+    fetchApplicants();
+  }, [profile]);
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
   }
 
-  // Get all users with nunu application status
-  const applicants = MOCK_USERS.filter(u =>
-    u.nunuApplicationStatus && u.nunuApplicationStatus !== 'none'
-  ).map(u => ({
-    ...u,
-    nunuApplicationStatus: localUpdates[u.id]?.status || u.nunuApplicationStatus,
-  }));
+  if (!profile) {
+    return null;
+  }
 
   // Filter applicants
   const filteredApplicants = filter === 'all'
     ? applicants
-    : applicants.filter(a => a.nunuApplicationStatus === filter);
+    : applicants.filter(a => a.nunu_application_status === filter);
 
-  const handleApprove = (userId: string) => {
-    setLocalUpdates(prev => ({
-      ...prev,
-      [userId]: { userId, status: 'approved', reviewedAt: new Date().toISOString() }
-    }));
+  const handleApprove = async (applicantId: string) => {
+    setUpdating(applicantId);
+    const supabase = getClient();
+
+    await supabase
+      .from('profiles')
+      .update({
+        nunu_application_status: 'approved',
+        available_roles: ['vava', 'nunu'],
+      })
+      .eq('id', applicantId);
+
+    setApplicants(prev =>
+      prev.map(a =>
+        a.id === applicantId
+          ? { ...a, nunu_application_status: 'approved' as const }
+          : a
+      )
+    );
+    setUpdating(null);
   };
 
-  const handleReject = (userId: string) => {
-    setLocalUpdates(prev => ({
-      ...prev,
-      [userId]: { userId, status: 'rejected', reviewedAt: new Date().toISOString() }
-    }));
+  const handleReject = async (applicantId: string) => {
+    setUpdating(applicantId);
+    const supabase = getClient();
+
+    await supabase
+      .from('profiles')
+      .update({ nunu_application_status: 'rejected' })
+      .eq('id', applicantId);
+
+    setApplicants(prev =>
+      prev.map(a =>
+        a.id === applicantId
+          ? { ...a, nunu_application_status: 'rejected' as const }
+          : a
+      )
+    );
+    setUpdating(null);
   };
 
   const statusColors = {
@@ -69,8 +142,8 @@ export default function ApplicationsPage() {
     rejected: '已拒絕',
   };
 
-  const pendingCount = applicants.filter(a => a.nunuApplicationStatus === 'pending').length;
-  const approvedCount = applicants.filter(a => a.nunuApplicationStatus === 'approved').length;
+  const pendingCount = applicants.filter(a => a.nunu_application_status === 'pending').length;
+  const approvedCount = applicants.filter(a => a.nunu_application_status === 'approved').length;
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
@@ -145,8 +218,9 @@ export default function ApplicationsPage() {
           ) : (
             <div className="space-y-4">
               {filteredApplicants.map(applicant => {
-                const status = applicant.nunuApplicationStatus as ApplicationStatus;
+                const status = applicant.nunu_application_status as ApplicationStatus;
                 const isPending = status === 'pending';
+                const isUpdating = updating === applicant.id;
 
                 return (
                   <div
@@ -184,12 +258,12 @@ export default function ApplicationsPage() {
                           <div>
                             <span className="text-muted-foreground">方案：</span>
                             <span className="font-medium">
-                              {applicant.planType === 'club' ? '俱樂部' : '基礎'}
+                              {applicant.plan_type === 'club' ? '俱樂部' : '基礎'}
                             </span>
                           </div>
                           <div>
                             <span className="text-muted-foreground">加入：</span>
-                            <span className="font-medium">{applicant.cohortMonth}</span>
+                            <span className="font-medium">{applicant.cohort_month || '-'}</span>
                           </div>
                         </div>
 
@@ -208,12 +282,12 @@ export default function ApplicationsPage() {
                               </span>
                             </div>
                             <div className="flex items-center gap-2">
-                              {applicant.planType === 'club' ? (
+                              {applicant.plan_type === 'club' ? (
                                 <span className="text-green-600">✓</span>
                               ) : (
                                 <span className="text-red-600">✗</span>
                               )}
-                              <span className={applicant.planType === 'club' ? '' : 'text-muted-foreground'}>
+                              <span className={applicant.plan_type === 'club' ? '' : 'text-muted-foreground'}>
                                 俱樂部會員
                               </span>
                             </div>
@@ -226,15 +300,16 @@ export default function ApplicationsPage() {
                         <div className="flex flex-col gap-2">
                           <Button
                             onClick={() => handleApprove(applicant.id)}
-                            disabled={applicant.level < 5}
+                            disabled={applicant.level < 5 || isUpdating}
                           >
-                            通過
+                            {isUpdating ? '處理中...' : '通過'}
                           </Button>
                           <Button
                             variant="outline"
                             onClick={() => handleReject(applicant.id)}
+                            disabled={isUpdating}
                           >
-                            拒絕
+                            {isUpdating ? '處理中...' : '拒絕'}
                           </Button>
                         </div>
                       )}
@@ -242,11 +317,6 @@ export default function ApplicationsPage() {
                       {!isPending && (
                         <div className="text-right text-sm text-muted-foreground">
                           <p>{status === 'approved' ? '已通過' : '已拒絕'}</p>
-                          {localUpdates[applicant.id]?.reviewedAt && (
-                            <p className="text-xs">
-                              {new Date(localUpdates[applicant.id].reviewedAt!).toLocaleDateString('zh-TW')}
-                            </p>
-                          )}
                         </div>
                       )}
                     </div>
