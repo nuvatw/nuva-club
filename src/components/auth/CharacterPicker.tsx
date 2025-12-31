@@ -78,9 +78,14 @@ export function CharacterPicker() {
 
       router.push(redirectPath);
       router.refresh();
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Login error:', err);
-      setError('登入失敗，請稍後再試');
+      const errorMessage = err instanceof Error ? err.message : '登入失敗';
+      if (errorMessage.includes('Invalid login credentials')) {
+        setError('帳號或密碼錯誤。請確認資料庫已設定完成。');
+      } else {
+        setError(`登入失敗：${errorMessage}`);
+      }
       setLoading(null);
     }
   };
