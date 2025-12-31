@@ -5,45 +5,56 @@ import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { useUser, useRole, getActiveChallenge, LEVELS, useDatabase, getCoursesByLevel } from '@/lib/mock';
+import { useAuth } from '@/hooks/useAuth';
+import { useDashboard, LEVELS } from '@/hooks/useDashboard';
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { user, isLoggedIn } = useUser();
-  const { isNunu, isGuardian } = useRole();
-  const { getCurrentCourse, getChallengeParticipation, getCompletedCoursesForLevel, getTotalCoursesForLevel } = useDatabase();
+  const { profile, loading: authLoading, isAuthenticated } = useAuth();
+  const {
+    currentCourse,
+    activeChallenge,
+    challengeParticipation,
+    completedCoursesForLevel,
+    totalCoursesForLevel,
+    loading: dashboardLoading,
+  } = useDashboard(profile?.id, profile?.level);
 
   useEffect(() => {
-    if (!isLoggedIn) {
+    if (!authLoading && !isAuthenticated) {
       router.push('/club/login');
     }
-  }, [isLoggedIn, router]);
+  }, [authLoading, isAuthenticated, router]);
 
-  if (!user) {
+  useEffect(() => {
+    if (!authLoading && profile) {
+      if (profile.role === 'nunu') {
+        router.push('/club/nunu/dashboard');
+      } else if (profile.role === 'guardian') {
+        router.push('/club/guardian/dashboard');
+      }
+    }
+  }, [authLoading, profile, router]);
+
+  if (authLoading || dashboardLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
     return null;
   }
 
-  if (isNunu) {
-    router.push('/nunu/dashboard');
-    return null;
-  }
-  if (isGuardian) {
-    router.push('/guardian/dashboard');
-    return null;
-  }
-
-  const activeChallenge = getActiveChallenge();
-  const currentCourse = getCurrentCourse();
-  const levelInfo = LEVELS.find(l => l.level === user.level);
-  const challengeParticipation = activeChallenge
-    ? getChallengeParticipation(activeChallenge.id, user.id)
-    : undefined;
+  const levelInfo = LEVELS.find(l => l.level === profile.level);
   const hasJoinedChallenge = !!challengeParticipation;
 
   // Calculate remaining time for challenge
   const getRemainingTime = () => {
     if (!activeChallenge) return null;
-    const endDate = new Date(activeChallenge.endDate);
+    const endDate = new Date(activeChallenge.end_date);
     const now = new Date();
     const diff = endDate.getTime() - now.getTime();
     if (diff <= 0) return '已結束';
@@ -52,15 +63,11 @@ export default function DashboardPage() {
     return `${days} 天 ${hours} 小時`;
   };
 
-  // Calculate level progress
-  const completedCourses = getCompletedCoursesForLevel(user.level);
-  const totalCourses = getTotalCoursesForLevel(user.level);
-
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
       {/* Welcome Section */}
       <div>
-        <h1 className="text-2xl font-bold">歡迎回來，{user.name}！</h1>
+        <h1 className="text-2xl font-bold">歡迎回來，{profile.name}！</h1>
         <p className="text-muted-foreground">繼續你的 AI 學習之旅</p>
       </div>
 
@@ -84,12 +91,12 @@ export default function DashboardPage() {
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">課程進度</span>
-                    <span className="font-medium">{completedCourses}/{totalCourses} 完成</span>
+                    <span className="font-medium">{completedCoursesForLevel}/{totalCoursesForLevel} 完成</span>
                   </div>
                   <div className="h-2 bg-muted rounded-full overflow-hidden">
                     <div
                       className="h-full bg-primary rounded-full transition-all"
-                      style={{ width: `${totalCourses > 0 ? (completedCourses / totalCourses) * 100 : 0}%` }}
+                      style={{ width: `${totalCoursesForLevel > 0 ? (completedCoursesForLevel / totalCoursesForLevel) * 100 : 0}%` }}
                     />
                   </div>
                 </div>
@@ -113,11 +120,9 @@ export default function DashboardPage() {
             {currentCourse ? (
               <div className="space-y-3">
                 <div className="flex gap-3">
-                  <img
-                    src={currentCourse.course.thumbnail}
-                    alt={currentCourse.course.title}
-                    className="w-20 h-14 rounded-lg object-cover flex-shrink-0"
-                  />
+                  <div className="w-20 h-14 rounded-lg bg-gradient-to-br from-primary/20 to-primary/10 flex items-center justify-center flex-shrink-0">
+                    <span className="text-2xl">📚</span>
+                  </div>
                   <div className="flex-1 min-w-0">
                     <h4 className="font-medium text-sm line-clamp-1">{currentCourse.course.title}</h4>
                     <p className="text-xs text-muted-foreground line-clamp-1 mt-0.5">
@@ -129,14 +134,14 @@ export default function DashboardPage() {
                   <div className="flex justify-between text-xs">
                     <span className="text-muted-foreground">進度</span>
                     <span>
-                      {currentCourse.progress.completedLessons.length}/{currentCourse.course.lessonsCount} 課
+                      {currentCourse.completedLessonsCount}/{currentCourse.course.lessons_count} 課
                     </span>
                   </div>
                   <div className="h-1.5 bg-muted rounded-full overflow-hidden">
                     <div
                       className="h-full bg-green-500 rounded-full"
                       style={{
-                        width: `${(currentCourse.progress.completedLessons.length / currentCourse.course.lessonsCount) * 100}%`,
+                        width: `${(currentCourse.completedLessonsCount / currentCourse.course.lessons_count) * 100}%`,
                       }}
                     />
                   </div>
@@ -144,8 +149,8 @@ export default function DashboardPage() {
                 <Link
                   href={
                     currentCourse.currentLesson
-                      ? `/courses/${currentCourse.course.id}/lessons/${currentCourse.currentLesson.id}`
-                      : `/courses/${currentCourse.course.id}`
+                      ? `/club/courses/${currentCourse.course.id}/lessons/${currentCourse.currentLesson.id}`
+                      : `/club/courses/${currentCourse.course.id}`
                   }
                 >
                   <Button className="w-full" size="sm">
@@ -181,11 +186,9 @@ export default function DashboardPage() {
               {activeChallenge ? (
                 <div className="space-y-3">
                   <div className="flex gap-3">
-                    <img
-                      src={activeChallenge.thumbnail}
-                      alt={activeChallenge.title}
-                      className="w-20 h-14 rounded-lg object-cover flex-shrink-0"
-                    />
+                    <div className="w-20 h-14 rounded-lg bg-gradient-to-br from-purple-100 to-purple-50 flex items-center justify-center flex-shrink-0">
+                      <span className="text-2xl">🏆</span>
+                    </div>
                     <div className="flex-1 min-w-0">
                       <h4 className="font-medium text-sm line-clamp-1">{activeChallenge.title}</h4>
                       <p className="text-xs text-muted-foreground line-clamp-1 mt-0.5">
@@ -208,7 +211,7 @@ export default function DashboardPage() {
                       <div className="flex justify-between text-xs text-muted-foreground">
                         <span>我的作品</span>
                         <span className="font-medium text-foreground">
-                          {challengeParticipation?.hasSubmitted ? '已提交' : '尚未提交'}
+                          {challengeParticipation?.submission_url ? '已提交' : '尚未提交'}
                         </span>
                       </div>
                       <Button variant="outline" className="w-full" size="sm">
@@ -218,7 +221,7 @@ export default function DashboardPage() {
                   ) : (
                     <div className="space-y-2">
                       <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>{activeChallenge.participantCount} 位參與者</span>
+                        <span>獎品: {activeChallenge.prize}</span>
                         <span>剩餘 {getRemainingTime()}</span>
                       </div>
                       <Button className="w-full bg-purple-600 hover:bg-purple-700" size="sm">
