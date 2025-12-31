@@ -88,7 +88,7 @@ export default function StudentDetailPage({
         `)
         .eq('coach_id', profile.id)
         .eq('student_id', studentId)
-        .single();
+        .maybeSingle();
 
       if (assignmentData?.student) {
         const studentData = Array.isArray(assignmentData.student)

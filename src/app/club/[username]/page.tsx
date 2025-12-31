@@ -42,7 +42,7 @@ function ProfileContent({ username }: { username: string }) {
         .select('*')
         .ilike('name', `%${username}%`)
         .limit(1)
-        .single();
+        .maybeSingle();
 
       if (userData) {
         // Get completed courses count

@@ -70,7 +70,7 @@ export default function CourseDetailPage({
         .from('courses')
         .select('*')
         .eq('id', courseId)
-        .single();
+        .maybeSingle();
 
       if (courseData) {
         const { data: lessonsData } = await supabase
@@ -91,7 +91,7 @@ export default function CourseDetailPage({
         .select('*')
         .eq('user_id', profile.id)
         .eq('course_id', courseId)
-        .single();
+        .maybeSingle();
 
       if (progressData) {
         setProgress(progressData);

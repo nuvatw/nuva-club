@@ -82,7 +82,7 @@ export default function ChallengeDetailPage({
         .from('challenges')
         .select('*')
         .eq('id', challengeId)
-        .single();
+        .maybeSingle();
 
       if (challengeData) {
         setChallenge(challengeData);
@@ -94,7 +94,7 @@ export default function ChallengeDetailPage({
         .select('*')
         .eq('challenge_id', challengeId)
         .eq('user_id', profile.id)
-        .single();
+        .maybeSingle();
 
       if (participationData) {
         setParticipation(participationData);

@@ -38,83 +38,94 @@ export function useDashboard(userId: string | undefined, userLevel: number | und
 
     const fetchDashboardData = async () => {
       const supabase = getClient();
+      const now = new Date().toISOString();
 
       try {
-        // 1. Get current course (most recently updated, not completed)
-        const { data: courseProgress } = await supabase
-          .from('user_course_progress')
-          .select(`
-            *,
-            course:courses(*)
-          `)
-          .eq('user_id', userId)
-          .eq('is_enrolled', true)
-          .eq('is_completed', false)
-          .order('updated_at', { ascending: false })
-          .limit(1)
-          .single();
+        // Run all independent queries in parallel for faster loading
+        const [
+          courseProgressResult,
+          activeChallengeResult,
+          totalCoursesResult,
+          completedCoursesResult,
+        ] = await Promise.all([
+          // 1. Get current course progress
+          supabase
+            .from('user_course_progress')
+            .select(`*, course:courses(*)`)
+            .eq('user_id', userId)
+            .eq('is_enrolled', true)
+            .eq('is_completed', false)
+            .order('updated_at', { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+          // 2. Get active challenge
+          supabase
+            .from('challenges')
+            .select('*')
+            .lte('start_date', now)
+            .gte('end_date', now)
+            .order('start_date', { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+          // 3. Get total courses for level
+          supabase
+            .from('courses')
+            .select('*', { count: 'exact', head: true })
+            .eq('level', userLevel),
+          // 4. Get completed courses for level
+          supabase
+            .from('user_course_progress')
+            .select(`*, course:courses!inner(level)`, { count: 'exact', head: true })
+            .eq('user_id', userId)
+            .eq('is_completed', true)
+            .eq('course.level', userLevel),
+        ]);
 
+        const courseProgress = courseProgressResult.data;
+        const activeChallenge = activeChallengeResult.data;
+
+        // Process current course data
         let currentCourse: CurrentCourseData | null = null;
-
         if (courseProgress?.course) {
-          // Get current lesson
-          let currentLesson: Lesson | null = null;
-          if (courseProgress.current_lesson_id) {
-            const { data: lesson } = await supabase
-              .from('lessons')
-              .select('*')
-              .eq('id', courseProgress.current_lesson_id)
-              .single();
-            currentLesson = lesson;
-          }
-
-          // If no current lesson set, get the first incomplete lesson
-          if (!currentLesson) {
-            const { data: incompleteLessons } = await supabase
+          // Fetch lesson data in parallel
+          const [lessonsResult, completedLessonsResult, currentLessonResult] = await Promise.all([
+            supabase
               .from('lessons')
               .select('*')
               .eq('course_id', courseProgress.course_id)
-              .order('order', { ascending: true });
-
-            const { data: completedLessonIds } = await supabase
+              .order('order', { ascending: true }),
+            supabase
               .from('user_lesson_progress')
               .select('lesson_id')
               .eq('user_id', userId)
               .eq('course_id', courseProgress.course_id)
-              .eq('is_completed', true);
+              .eq('is_completed', true),
+            courseProgress.current_lesson_id
+              ? supabase
+                  .from('lessons')
+                  .select('*')
+                  .eq('id', courseProgress.current_lesson_id)
+                  .maybeSingle()
+              : Promise.resolve({ data: null }),
+          ]);
 
-            const completedIds = new Set(completedLessonIds?.map(l => l.lesson_id) || []);
-            currentLesson = incompleteLessons?.find(l => !completedIds.has(l.id)) || incompleteLessons?.[0] || null;
+          const completedIds = new Set(completedLessonsResult.data?.map(l => l.lesson_id) || []);
+          let currentLesson = currentLessonResult.data;
+
+          // If no current lesson, find first incomplete
+          if (!currentLesson && lessonsResult.data) {
+            currentLesson = lessonsResult.data.find(l => !completedIds.has(l.id)) || lessonsResult.data[0] || null;
           }
-
-          // Get completed lessons count
-          const { count: completedCount } = await supabase
-            .from('user_lesson_progress')
-            .select('*', { count: 'exact', head: true })
-            .eq('user_id', userId)
-            .eq('course_id', courseProgress.course_id)
-            .eq('is_completed', true);
 
           currentCourse = {
             course: courseProgress.course as Course,
             progress: courseProgress,
             currentLesson,
-            completedLessonsCount: completedCount || 0,
+            completedLessonsCount: completedIds.size,
           };
         }
 
-        // 2. Get active challenge
-        const now = new Date().toISOString();
-        const { data: activeChallenge } = await supabase
-          .from('challenges')
-          .select('*')
-          .lte('start_date', now)
-          .gte('end_date', now)
-          .order('start_date', { ascending: false })
-          .limit(1)
-          .single();
-
-        // 3. Get challenge participation if there's an active challenge
+        // Get challenge participation if there's an active challenge
         let challengeParticipation = null;
         if (activeChallenge) {
           const { data: participation } = await supabase
@@ -122,32 +133,16 @@ export function useDashboard(userId: string | undefined, userLevel: number | und
             .select('status, submission_url')
             .eq('user_id', userId)
             .eq('challenge_id', activeChallenge.id)
-            .single();
+            .maybeSingle();
           challengeParticipation = participation;
         }
-
-        // 4. Get level progress (courses for current level)
-        const { count: totalCoursesForLevel } = await supabase
-          .from('courses')
-          .select('*', { count: 'exact', head: true })
-          .eq('level', userLevel);
-
-        const { count: completedCoursesForLevel } = await supabase
-          .from('user_course_progress')
-          .select(`
-            *,
-            course:courses!inner(level)
-          `, { count: 'exact', head: true })
-          .eq('user_id', userId)
-          .eq('is_completed', true)
-          .eq('course.level', userLevel);
 
         setData({
           currentCourse,
           activeChallenge,
           challengeParticipation,
-          completedCoursesForLevel: completedCoursesForLevel || 0,
-          totalCoursesForLevel: totalCoursesForLevel || 0,
+          completedCoursesForLevel: completedCoursesResult.count || 0,
+          totalCoursesForLevel: totalCoursesResult.count || 0,
           loading: false,
         });
       } catch (error) {

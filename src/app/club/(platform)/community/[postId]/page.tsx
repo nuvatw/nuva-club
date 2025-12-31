@@ -82,7 +82,7 @@ export default function PostDetailPage({
           user:profiles(id, name, image, level)
         `)
         .eq('id', postId)
-        .single();
+        .maybeSingle();
 
       if (postData) {
         // Check if user has fired this post
@@ -91,7 +91,7 @@ export default function PostDetailPage({
           .select('id')
           .eq('post_id', postId)
           .eq('user_id', profile.id)
-          .single();
+          .maybeSingle();
 
         setPost({
           ...postData,

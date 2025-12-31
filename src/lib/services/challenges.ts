@@ -28,7 +28,7 @@ export async function getActiveChallenge(): Promise<Challenge | null> {
     .gte('end_date', now)
     .order('start_date', { ascending: false })
     .limit(1)
-    .single();
+    .maybeSingle();
 
   if (error) {
     return null;
@@ -44,7 +44,7 @@ export async function getChallenge(challengeId: string): Promise<Challenge | nul
     .from('challenges')
     .select('*')
     .eq('id', challengeId)
-    .single();
+    .maybeSingle();
 
   if (error) {
     console.error('Error fetching challenge:', error);
@@ -86,7 +86,7 @@ export async function getUserChallengeParticipation(
     .select('*')
     .eq('user_id', userId)
     .eq('challenge_id', challengeId)
-    .single();
+    .maybeSingle();
 
   if (error) {
     return null;

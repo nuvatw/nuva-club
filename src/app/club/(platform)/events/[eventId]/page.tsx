@@ -64,7 +64,7 @@ export default function EventDetailPage({
           host:profiles!events_host_id_fkey(id, name, image)
         `)
         .eq('id', eventId)
-        .single();
+        .maybeSingle();
 
       if (eventError) {
         setError('活動不存在');
@@ -80,7 +80,7 @@ export default function EventDetailPage({
         .select('*')
         .eq('event_id', eventId)
         .eq('user_id', profile.id)
-        .single();
+        .maybeSingle();
 
       if (rsvpData) {
         setMyRsvp(rsvpData);

@@ -31,6 +31,12 @@ interface Conversation {
   unreadCount: number;
 }
 
+interface UserForMessage {
+  id: string;
+  name: string;
+  image: string | null;
+}
+
 function timeAgo(dateStr: string) {
   const date = new Date(dateStr);
   const now = new Date();
@@ -55,6 +61,10 @@ export default function MessagesPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
+  const [showNewConversation, setShowNewConversation] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<UserForMessage[]>([]);
+  const [searching, setSearching] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -146,6 +156,54 @@ export default function MessagesPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Search for users to start new conversation
+  useEffect(() => {
+    if (!profile || !searchQuery.trim()) {
+      setSearchResults([]);
+      return;
+    }
+
+    const searchUsers = async () => {
+      setSearching(true);
+      const supabase = getClient();
+
+      const { data } = await supabase
+        .from('profiles')
+        .select('id, name, image')
+        .neq('id', profile.id)
+        .ilike('name', `%${searchQuery}%`)
+        .limit(10);
+
+      setSearchResults(data || []);
+      setSearching(false);
+    };
+
+    const debounce = setTimeout(searchUsers, 300);
+    return () => clearTimeout(debounce);
+  }, [searchQuery, profile]);
+
+  const startConversation = (user: UserForMessage) => {
+    // Check if conversation already exists
+    const existing = conversations.find(c => c.partnerId === user.id);
+    if (existing) {
+      setSelectedConversation(user.id);
+    } else {
+      // Add new conversation to list
+      setConversations(prev => [{
+        partnerId: user.id,
+        partnerName: user.name,
+        partnerImage: user.image,
+        lastMessage: '',
+        lastMessageTime: new Date().toISOString(),
+        unreadCount: 0,
+      }, ...prev]);
+      setSelectedConversation(user.id);
+    }
+    setShowNewConversation(false);
+    setSearchQuery('');
+    setSearchResults([]);
+  };
+
   const handleSendMessage = async () => {
     if (!newMessage.trim() || !selectedConversation || !profile) return;
 
@@ -193,11 +251,53 @@ export default function MessagesPage() {
         {/* Conversation List */}
         <Card className="md:col-span-1 overflow-hidden">
           <CardHeader className="pb-2">
-            <CardTitle className="text-base">對話列表</CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base">對話列表</CardTitle>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowNewConversation(!showNewConversation)}
+              >
+                + 新訊息
+              </Button>
+            </div>
+            {showNewConversation && (
+              <div className="mt-3">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="搜尋用戶..."
+                  className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  autoFocus
+                />
+                {searching && <p className="text-xs text-muted-foreground mt-2">搜尋中...</p>}
+                {searchResults.length > 0 && (
+                  <div className="mt-2 border rounded-lg overflow-hidden">
+                    {searchResults.map((user) => (
+                      <button
+                        key={user.id}
+                        onClick={() => startConversation(user)}
+                        className="w-full flex items-center gap-2 p-2 text-left hover:bg-muted/50 border-b last:border-b-0"
+                      >
+                        {user.image ? (
+                          <img src={user.image} alt="" className="w-8 h-8 rounded-full object-cover" />
+                        ) : (
+                          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                            <span className="text-sm font-medium">{user.name.charAt(0)}</span>
+                          </div>
+                        )}
+                        <span className="text-sm">{user.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </CardHeader>
-          <CardContent className="p-0 overflow-y-auto" style={{ maxHeight: '520px' }}>
+          <CardContent className="p-0 overflow-y-auto" style={{ maxHeight: showNewConversation ? '350px' : '520px' }}>
             {conversations.length === 0 ? (
-              <p className="text-center py-8 text-muted-foreground text-sm">沒有對話</p>
+              <p className="text-center py-8 text-muted-foreground text-sm">沒有對話，點擊「新訊息」開始聊天</p>
             ) : (
               conversations.map((conv) => (
                 <button

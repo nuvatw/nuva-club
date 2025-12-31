@@ -57,7 +57,7 @@ export default function LessonPage({
         .from('courses')
         .select('*')
         .eq('id', courseId)
-        .single();
+        .maybeSingle();
 
       if (courseData) {
         const { data: lessonsData } = await supabase

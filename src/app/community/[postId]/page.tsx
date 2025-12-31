@@ -78,7 +78,7 @@ export default function PostDetailPage({
           author:profiles!posts_user_id_fkey(id, name, image, level)
         `)
         .eq('id', postId)
-        .single();
+        .maybeSingle();
 
       if (postError) {
         setError('找不到這則貼文');
@@ -94,7 +94,7 @@ export default function PostDetailPage({
         .select('id')
         .eq('post_id', postId)
         .eq('user_id', profile.id)
-        .single();
+        .maybeSingle();
 
       setHasFired(!!fireData);
 
