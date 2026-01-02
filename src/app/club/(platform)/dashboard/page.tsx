@@ -59,8 +59,14 @@ export default function DashboardPage() {
   if (!profile) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
-        <div className="text-center">
-          <p className="text-muted-foreground mb-4">無法載入用戶資料</p>
+        <div className="text-center p-8 bg-red-50 border border-red-200 rounded-lg max-w-md">
+          <div className="text-red-500 mb-4">
+            <svg className="w-12 h-12 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          </div>
+          <p className="text-red-700 font-medium text-lg mb-2">無法載入用戶資料</p>
+          <p className="text-red-600 text-sm mb-6">請確認您已登入，或嘗試重新整理頁面</p>
           <Button onClick={() => window.location.reload()}>重新整理</Button>
         </div>
       </div>

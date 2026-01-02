@@ -48,10 +48,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const supabase = getClient();
 
     // Get initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       setUser(session?.user ?? null);
       if (session?.user) {
-        fetchProfile(session.user.id);
+        await fetchProfile(session.user.id);  // Wait for profile to load before setting loading to false
       }
       setLoading(false);
     });
